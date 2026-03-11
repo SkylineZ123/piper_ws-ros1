@@ -1,0 +1,9 @@
+# Subtask definitions for dual-arm manipulation experiments.
+# Switch between task sets by loading different YAML files or
+# overriding via ROS parameter ~subtasks_file.
+
+subtasks:
+  '1': 'pick up beakers from the table.'
+  '2': 'pour the liquid from the left beaker into the right beaker.'
+  '3': 'place the beakers to their initial position.'
+  '4': 'return to the initial position.'

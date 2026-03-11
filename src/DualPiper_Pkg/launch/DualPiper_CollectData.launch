@@ -1,0 +1,8 @@
+<launch>
+  <include file="$(find DualPiper_Pkg)/launch/DualPiper_TeleoperationSystem.launch"/>
+
+  <node pkg="DualPiper_Pkg" 
+        type="DualArm_DataToHDF5_Node.py" 
+        name="DualArm_DataToHDF5_Node.py" 
+        output="screen"/>
+</launch>
