@@ -28,6 +28,7 @@ import types
 
 import numpy as np
 import rospy
+from tqdm import tqdm
 from pynput import keyboard
 from sensor_msgs.msg import Image, JointState, PointCloud2
 
@@ -295,12 +296,15 @@ class LeRobotCollectorNode:
         rospy.loginfo(f'▶ Collecting from frame {count} (max {cfg.max_timesteps})')
         rospy.loginfo(f'  Current subtask: {self.current_subtask}')
 
+        pbar = tqdm(total=cfg.max_timesteps, desc='Collecting', ncols=80, initial=count)
+
         while not rospy.is_shutdown() and count < cfg.max_timesteps:
             # Check pause
             if self._key == 'space':
                 rospy.loginfo(f'⏸ Paused at frame {count}')
                 self.collecting = False
                 self._key = None
+                pbar.close()
                 return
 
             frame = self._get_synced_frame()
@@ -329,11 +333,10 @@ class LeRobotCollectorNode:
 
             self.frame_buffer.append(entry)
             count += 1
-
-            if count % 100 == 0:
-                rospy.loginfo(f'  … {count} frames collected')
+            pbar.update(1)
             rate.sleep()
 
+        pbar.close()
         if count >= cfg.max_timesteps:
             rospy.loginfo(f'⏹ Reached max_timesteps ({cfg.max_timesteps})')
             self.collecting = False
