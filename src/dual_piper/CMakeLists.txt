@@ -20,11 +20,11 @@ include_directories(
 
 # ── Install Python scripts ──
 catkin_install_python(PROGRAMS
-  scripts/state_get_node.py
-  scripts/data_replay_node.py
-  scripts/data_to_hdf5_node.py
-  scripts/data_to_hdf5_highlevel_node.py
-  scripts/data_to_lerobot3_node.py
+ scripts/state_get_node.py
+ scripts/data_replay_node.py
+#  scripts/data_to_hdf5_node.py
+#  scripts/data_to_hdf5_highlevel_node.py
+ scripts/data_to_lerobot3_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

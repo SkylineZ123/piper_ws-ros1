@@ -1,0 +1,102 @@
+<launch>
+  <!-- ═══════════════════════════════════════════════════════════════════
+       Dual-arm Piper Teleoperation System
+       ═══════════════════════════════════════════════════════════════════
+       Launches:
+         1. Piper URDF / xacro visualization
+         2. Dual-arm state publisher (state_get_node.py)
+         3. Three Intel RealSense cameras (top, left wrist, right wrist)
+  -->
+
+  <!-- ── Robot arm CAN arguments ───────────────────────────────────── -->
+  <arg name="piper_can_left_port"  default="can_left"
+       doc="CAN port for the left arm"/>
+  <arg name="piper_can_right_port" default="can_right"
+       doc="CAN port for the right arm"/>
+  <arg name="auto_enable" default="true"
+       doc="Automatically enable robot arms on startup"/>
+
+  <!-- ── URDF visualization ────────────────────────────────────────── -->
+  <include file="$(find piper_description)/launch/piper_with_gripper/display_xacro.launch"/>
+
+  <!-- ── State publisher ───────────────────────────────────────────── -->
+  <node pkg="dual_piper"
+        type="state_get_node.py"
+        name="dual_piper_state_get_node"
+        output="screen">
+    <param name="left_can_port"  value="$(arg piper_can_left_port)"/>
+    <param name="right_can_port" value="$(arg piper_can_right_port)"/>
+    <param name="auto_enable"    value="$(arg auto_enable)"/>
+  </node>
+
+  <!-- ── Camera arguments ──────────────────────────────────────────── -->
+  <arg name="camera1"     default="cam_top"/>
+  <arg name="serial_no_1" default="327122074756"/>
+
+  <arg name="camera2"     default="cam_leftwrist"/>
+  <arg name="serial_no_2" default="148522072680"/>
+
+  <arg name="camera3"     default="cam_rightwrist"/>
+  <arg name="serial_no_3" default="241222073777"/>
+
+  <!-- ── Camera 1 (top) ────────────────────────────────────────────── -->
+  <group ns="$(arg camera1)">
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+      <arg name="camera"           value="$(arg camera1)"/>
+      <arg name="serial_no"        value="$(arg serial_no_1)"/>
+      <arg name="enable_color"     value="true"/>
+      <arg name="enable_depth"     value="false"/>
+      <arg name="enable_infra1"    value="false"/>
+      <arg name="enable_infra2"    value="false"/>
+      <arg name="align_depth"      value="false"/>
+      <arg name="enable_pointcloud" value="false"/>
+      <arg name="enable_gyro"      value="false"/>
+      <arg name="enable_accel"     value="false"/>
+      <arg name="color_width"      value="320"/>
+      <arg name="color_height"     value="180"/>
+      <arg name="color_fps"        value="30"/>
+      <arg name="initial_reset"    value="true"/>
+    </include>
+  </group>
+
+  <!-- ── Camera 2 (left wrist) ─────────────────────────────────────── -->
+  <group ns="$(arg camera2)">
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+      <arg name="camera"           value="$(arg camera2)"/>
+      <arg name="serial_no"        value="$(arg serial_no_2)"/>
+      <arg name="enable_color"     value="true"/>
+      <arg name="enable_depth"     value="false"/>
+      <arg name="align_depth"      value="false"/>
+      <arg name="enable_infra1"    value="false"/>
+      <arg name="enable_infra2"    value="false"/>
+      <arg name="enable_pointcloud" value="false"/>
+      <arg name="enable_gyro"      value="false"/>
+      <arg name="enable_accel"     value="false"/>
+      <arg name="color_width"      value="320"/>
+      <arg name="color_height"     value="180"/>
+      <arg name="color_fps"        value="30"/>
+      <arg name="initial_reset"    value="true"/>
+    </include>
+  </group>
+
+  <!-- ── Camera 3 (right wrist) ────────────────────────────────────── -->
+  <group ns="$(arg camera3)">
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+      <arg name="camera"           value="$(arg camera3)"/>
+      <arg name="serial_no"        value="$(arg serial_no_3)"/>
+      <arg name="enable_color"     value="true"/>
+      <arg name="enable_depth"     value="false"/>
+      <arg name="align_depth"      value="false"/>
+      <arg name="enable_infra1"    value="false"/>
+      <arg name="enable_infra2"    value="false"/>
+      <arg name="enable_pointcloud" value="false"/>
+      <arg name="enable_gyro"      value="false"/>
+      <arg name="enable_accel"     value="false"/>
+      <arg name="color_width"      value="320"/>
+      <arg name="color_height"     value="180"/>
+      <arg name="color_fps"        value="30"/>
+      <arg name="initial_reset"    value="true"/>
+    </include>
+  </group>
+
+</launch>

@@ -6,4 +6,5 @@ subtasks:
   '1': 'pick up beakers from the table.'
   '2': 'pour the liquid from the left beaker into the right beaker.'
   '3': 'place the beakers to their initial position.'
-  '4': 'return to the initial position.'
+  '4': 'return to the initial position.',
+  '5': 'pass the test tube from the right arm to the left arm.'
