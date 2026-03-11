@@ -1,0 +1,17 @@
+<launch>
+  <!-- ═══════════════════════════════════════════════════════════════════
+       Hand-eye Calibration (single arm)
+       ═══════════════════════════════════════════════════════════════════
+       Launches:
+         1. Dual-arm teleoperation system
+         2. ArUco marker detector
+         3. easy_handeye calibration routine
+  -->
+
+  <include file="$(find dual_piper)/launch/teleoperation.launch"/>
+
+  <include file="$(find aruco_ros)/launch/single.launch"/>
+
+  <include file="$(find easy_handeye)/launch/calibrate.launch"/>
+
+</launch>

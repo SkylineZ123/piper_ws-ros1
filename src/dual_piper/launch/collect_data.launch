@@ -1,0 +1,18 @@
+<launch>
+  <!-- ═══════════════════════════════════════════════════════════════════
+       Dual-arm Data Collection
+       ═══════════════════════════════════════════════════════════════════
+       Launches the teleoperation system and the HDF5 data collection
+       node together.
+  -->
+
+  <!-- Start the teleoperation system (arms + cameras) -->
+  <include file="$(find dual_piper)/launch/teleoperation.launch"/>
+
+  <!-- Start the HDF5 data collection node -->
+  <node pkg="dual_piper"
+        type="data_to_hdf5_node.py"
+        name="data_to_hdf5_node"
+        output="screen"/>
+
+</launch>
