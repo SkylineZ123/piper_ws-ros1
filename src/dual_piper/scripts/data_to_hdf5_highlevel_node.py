@@ -282,9 +282,9 @@ class HighLevelHDF5CollectorNode:
 
         pointclouds = None
         if self.args.save_pointcloud and self._queues.get('pc_top'):
-            from utils import sample_and_expand_pointcloud
+            from utils import sample_pointcloud
             pc_msg = self._queues['pc_top'].popleft()
-            pointclouds = {'cam_top': sample_and_expand_pointcloud(
+            pointclouds = {'cam_top': sample_pointcloud(
                 pc_msg, self.args.pc_target_points)}
 
         return {
