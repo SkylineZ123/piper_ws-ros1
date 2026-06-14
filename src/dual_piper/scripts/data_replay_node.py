@@ -81,6 +81,8 @@ class DataReplayNode:
                              f'stitched_depth_episode{args.episode_idx}.mp4'),
                 mode='depth')
 
+        self.replay_trajectory_on_robot()
+
     # ── HDF5 Loading ─────────────────────────────────────────────────────
 
     @staticmethod
@@ -266,9 +268,9 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description='Replay an HDF5 episode and visualize data.')
     parser.add_argument('--dataset_dir', type=str,
-                        default='/home/user/zzq/piper_ws/data')
-    parser.add_argument('--task_name', type=str, default='bloodgas_0306')
-    parser.add_argument('--episode_idx', type=int, default=3)
+                        default='/home/user/hdd_4t/data/data_hdf5/MoveTube_0604')
+    parser.add_argument('--task_name', type=str, default='The_right_robotic_arm_picks_up_a_test_tube_from_the_right_rack.')
+    parser.add_argument('--episode_idx', type=int, default=0)
     parser.add_argument('--camera_names', type=str,
                         default='cam_top,cam_left,cam_right')
     parser.add_argument('--master_arm_topic', type=str,

@@ -1,0 +1,88 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Dual-Piper Data Collection & Replay Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+# Usage:
+#   Collection:  rosrun dual_piper data_to_lerobot3_node.py
+#                  _config_file:=/path/to/collection.yaml
+#   Replay:      rosrun dual_piper data_replay_node.py
+#                  --config config/collection.yaml
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Dataset ───────────────────────────────────────────────────────────────
+dataset:
+  repo_id: "RoboMLT/LiquidTransport_0614"
+#  repo_id: "Medical_20260608"
+  target_dir: "/home/user/hdd_4t/data/data_lerobot3/LiquidTransport_0614"
+#  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/TestTubeExchange_0424"
+  task_name: "pick and place test tube."
+  robot_type: "dual_piper"
+  fps: 20
+  resume: false          # true = append to existing dataset; false = fresh start
+  # Subtask definitions (key = keyboard shortcut, value = natural-language description).
+  # Only used when subtask.enabled = true.
+  subtasks:
+    '1': 'pick up the test tube from the rack.'
+    '2': 'place the test tube to the plate.'
+    '3': 'return to the initial position.'
+#  subtasks:
+#    '1': 'The right robotic arm picks up a test tube from the right rack.'
+#    '2': 'The test tube is transferred from the right arm to the left arm.'
+#    '3': 'The left robotic arm places the test tube into the left rack.'
+#    '4': 'The robotic arms return to their initial positions.'
+#    '5': 'pass the test tube from the right arm to the left arm.'
+
+# ── Robot ─────────────────────────────────────────────────────────────────
+robot:
+  state_dim: 14         # 7 joints x 2 arms
+  action_dim: 14
+  num_joints_per_arm: 7 # 6 joints + 1 gripper
+
+# ── Collection ────────────────────────────────────────────────────────────
+collection:
+  max_timesteps: 10000   # max frames per episode before auto-pause
+
+# ── Camera ────────────────────────────────────────────────────────────────
+camera:
+  names: ["cam_top", "cam_left","cam_right"]
+  image_height: 480
+  image_width: 640
+  use_depth: false
+  use_videos: true      # true = MP4 video streams; false = individual images
+
+# ── Point Cloud ───────────────────────────────────────────────────────────
+pointcloud:
+  enabled: false
+  target_points: 5000
+
+# ── Subtask ───────────────────────────────────────────────────────────────
+subtask:
+  enabled: true   # set to false to disable per-frame subtask labelling
+
+# ── ROS Topics ────────────────────────────────────────────────────────────
+topics:
+  # RGB camera topics
+  img_top: "/cam_top/cam_top/color/image_raw"
+  img_left: "/cam_leftwrist/cam_leftwrist/color/image_raw"
+  img_right: "/cam_rightwrist/cam_rightwrist/color/image_raw"
+  # Depth camera topics (used only when camera.use_depth = true)
+  img_top_depth: "/cam_top/cam_top/aligned_depth_to_color/image_raw"
+  img_left_depth: "/cam_leftwrist/cam_leftwrist/aligned_depth_to_color/image_raw"
+  img_right_depth: "/cam_rightwrist/cam_rightwrist/aligned_depth_to_color/image_raw"
+  # Joint state topics
+  left_master: "left/master_joint_states"
+  left_slave: "left/slave_joint_states"
+  right_master: "right/master_joint_states"
+  right_slave: "right/slave_joint_states"
+  # Point cloud topic (used only when pointcloud.enabled = true)
+  pc_top: "/cam_top/cam_top/depth/color/points"
+
+# ── Replay ────────────────────────────────────────────────────────────────
+replay:
+  episode_idx: 0        # which episode to replay / visualize
+  replay_on_robot: false # send actions to physical arms
+  plot_joints: true     # save joint-position / action plots
+  stitch_video: true    # save stitched multi-camera video
+  video_fps: 20         # output video frame rate (should match dataset fps)
+  # CAN ports for real-robot replay
+  can_left: "can_left"
+  can_right: "can_right"
