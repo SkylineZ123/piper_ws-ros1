@@ -1,304 +1,401 @@
-#!/home/user/anaconda3/envs/lerobotv3/bin/python
+#!/home/zzq/.conda/envs/robomlt/bin/python3
 # -*- coding: utf-8 -*-
 """
-Dual-arm Data Replay Node
+LeRobot v3 Data Replay Node
 
-Loads an HDF5 episode recorded by the data-collection node, visualizes
-joint-position / action curves and stitched camera videos, and optionally
-replays the trajectory on the real Piper arms.
+Loads a LeRobot v3 dataset episode (Parquet + MP4), visualizes joint-position /
+action curves and stitched camera videos, and optionally replays the trajectory
+on the real Piper arms.
 
-Usage::
+Usage (standalone)::
 
-    rosrun dual_piper data_replay_node.py \\
-        --dataset_dir /path/to/data \\
-        --task_name my_task \\
-        --episode_idx 0
+    python data_replay_node.py --dataset_dir /path/to/lerobot_v3 --episode_idx 0
+
+Usage (via rosrun)::
+
+    rosrun dual_piper data_replay_node.py --dataset_dir /path/to/lerobot_v3 --episode_idx 0
 """
+
+import argparse
+import json
 import os
 import sys
-# Ensure the scripts directory is on sys.path so that the utils package is
-# importable regardless of the working directory used by rosrun / roslaunch.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import argparse
 
-import numpy as np
+import av
 import cv2
-import h5py
-import rospy
-from sensor_msgs.msg import JointState
-from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pyarrow.parquet as pq
+from tqdm import tqdm
 
-from utils import RAD_TO_DEG_X1000, GRIPPER_SCALE
+# ── Optional ROS ──────────────────────────────────────────────────────────────
+try:
+    import rospy
+    _HAS_ROS = True
+except ImportError:
+    _HAS_ROS = False
 
 
-class DataReplayNode:
+def _log(msg: str, level: str = 'info'):
+    if _HAS_ROS and rospy.core.is_initialized():
+        getattr(rospy, level)(msg)
+    else:
+        prefix = {'info': '[INFO]', 'warn': '[WARN]', 'error': '[ERROR]'}.get(level, '[INFO]')
+        print(f'{prefix} {msg}', flush=True)
+
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+# Piper SDK unit conversions (for robot replay)
+RAD_TO_DEG_X1000 = 180.0 / np.pi * 1000.0
+GRIPPER_SCALE = 1_000_000.0
+
+# Camera stitch order (left → right in the output frame)
+_STITCH_ORDER = ('cam_top', 'cam_left', 'cam_right')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  Dataset helpers
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _load_info(dataset_dir: str) -> dict:
+    path = os.path.join(dataset_dir, 'meta', 'info.json')
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'meta/info.json not found: {path}')
+    with open(path) as f:
+        return json.load(f)
+
+
+def _load_subtasks(dataset_dir: str) -> dict:
+    """Return {subtask_index (int): subtask_name (str)}, empty dict if file absent."""
+    path = os.path.join(dataset_dir, 'meta', 'subtasks.parquet')
+    if not os.path.isfile(path):
+        return {}
+    df = pq.read_table(path).to_pandas()
+    # index column = subtask_index, 'subtask' is the row index label
+    return {int(row['subtask_index']): idx for idx, row in df.iterrows()}
+
+
+def _load_episode_meta(dataset_dir: str, episode_idx: int) -> pd.Series:
+    """Return the episode metadata row for *episode_idx*."""
+    ep_dir = os.path.join(dataset_dir, 'meta', 'episodes')
+    rows = []
+    for chunk_dir in sorted(os.listdir(ep_dir)):
+        for fname in sorted(os.listdir(os.path.join(ep_dir, chunk_dir))):
+            tbl = pq.read_table(os.path.join(ep_dir, chunk_dir, fname)).to_pandas()
+            rows.append(tbl)
+    all_eps = pd.concat(rows, ignore_index=True)
+    match = all_eps[all_eps['episode_index'] == episode_idx]
+    if match.empty:
+        raise ValueError(f'Episode {episode_idx} not found (total: {len(all_eps)})')
+    return match.iloc[0]
+
+
+def _load_episode_data(dataset_dir: str, ep_meta: pd.Series) -> pd.DataFrame:
+    """Load the data parquet rows that belong to this episode."""
+    chunk_idx = int(ep_meta['data/chunk_index'])
+    file_idx = int(ep_meta['data/file_index'])
+    parquet_path = os.path.join(
+        dataset_dir, 'data',
+        f'chunk-{chunk_idx:03d}', f'file-{file_idx:03d}.parquet'
+    )
+    df = pq.read_table(parquet_path).to_pandas()
+    ep_idx = int(ep_meta['episode_index'])
+    return df[df['episode_index'] == ep_idx].reset_index(drop=True)
+
+
+def _load_camera_frames(dataset_dir: str, ep_meta: pd.Series,
+                        camera_name: str, fps: float) -> list:
     """
-    ROS node for replaying HDF5 episodes.
+    Read all frames for *camera_name* in this episode from its MP4 file.
 
-    Provides:
-    * ``load_hdf5``  — load observations, images, actions
-    * ``plot_qpos_action`` — joint-position / action curve plots
-    * ``stitch_and_save_videos`` — side-by-side camera video export
-    * ``replay_trajectory_on_robot`` — send actions to real arms via SDK
+    Uses PyAV (libdav1d) so AV1-encoded videos are decoded correctly, unlike
+    the default OpenCV build which lacks a software AV1 decoder.
+
+    Returns a list of BGR uint8 ndarrays (H, W, 3).
     """
+    key = f'videos/observation.images.{camera_name}'
+    if f'{key}/chunk_index' not in ep_meta.index:
+        _log(f'Camera {camera_name} not found in episode metadata — skipping.', 'warn')
+        return []
 
-    # Camera ordering used when stitching frames.
-    _STITCH_ORDER = ('cam_top', 'cam_left', 'cam_right')
+    chunk_idx = int(ep_meta[f'{key}/chunk_index'])
+    file_idx = int(ep_meta[f'{key}/file_index'])
+    from_ts = float(ep_meta[f'{key}/from_timestamp'])
+    to_ts = float(ep_meta[f'{key}/to_timestamp'])
+
+    video_path = os.path.join(
+        dataset_dir, 'videos', f'observation.images.{camera_name}',
+        f'chunk-{chunk_idx:03d}', f'file-{file_idx:03d}.mp4'
+    )
+    if not os.path.isfile(video_path):
+        _log(f'Video file not found: {video_path}', 'warn')
+        return []
+
+    n_frames = int(round((to_ts - from_ts) * fps))
+
+    container = av.open(video_path)
+    stream = container.streams.video[0]
+
+    # Seek to approximately the right position (AV_TIME_BASE = microseconds)
+    seek_pts = int(from_ts * 1e6)
+    container.seek(seek_pts)
+
+    frames = []
+    for pkt in container.decode(stream):
+        frame_ts = float(pkt.pts * stream.time_base)
+        if frame_ts < from_ts - 1e-3:
+            continue
+        # PyAV returns RGB; convert to BGR for consistency with cv2
+        frames.append(pkt.to_ndarray(format='bgr24'))
+        if len(frames) >= n_frames:
+            break
+
+    container.close()
+    return frames
 
 
-    def __init__(self, args):
-        rospy.init_node('data_replay_node', anonymous=True)
-        self.args = args
+# ═════════════════════════════════════════════════════════════════════════════
+#  Visualisation
+# ═════════════════════════════════════════════════════════════════════════════
 
-        # ── Publishers (for optional ROS-level replay) ───────────────────
-        self._slave_pub = rospy.Publisher(
-            args.slave_arm_topic, JointState, queue_size=10)
-        self._master_pub = rospy.Publisher(
-            args.master_arm_topic, JointState, queue_size=10)
-
-        # ── Load data ────────────────────────────────────────────────────
-        dataset_dir = os.path.join(args.dataset_dir, args.task_name)
-        dataset_path = os.path.join(dataset_dir, f'episode_{args.episode_idx}.hdf5')
-        (self.qpos, self.qvels, self.efforts,
-         self.actions, self.image_dicts, self.depth_dicts) = \
-            self.load_hdf5(dataset_path)
+def _joint_label(info: dict, idx: int, prefix: str) -> str:
+    """Return a human-readable label for joint *idx* from info.json feature names."""
+    try:
+        return info['features'][prefix]['names'][idx]
+    except (KeyError, IndexError, TypeError):
+        return f'j{idx}'
 
 
-        # ── Visualize ────────────────────────────────────────────────────
-        output_dir = os.path.join(dataset_dir, 'output')
-        self.plot_qpos_action(self.qpos, self.actions, output_dir=output_dir)
-        self.stitch_and_save_videos(
-            self.image_dicts,
-            os.path.join(output_dir,
-                         f'stitched_video_episode{args.episode_idx}.mp4'))
-        if self.depth_dicts is not None:
-            self.stitch_and_save_videos(
-                self.depth_dicts,
-                os.path.join(output_dir,
-                             f'stitched_depth_episode{args.episode_idx}.mp4'),
-                mode='depth')
+def plot_qpos_action(qpos: np.ndarray, action: np.ndarray,
+                     info: dict, output_path: str) -> None:
+    """Plot joint-position (qpos) and action curves; save to *output_path*."""
+    T = qpos.shape[0]
+    t = np.arange(T) / float(info.get('fps', 20))
 
-        self.replay_trajectory_on_robot()
+    dim = qpos.shape[1]
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
-    # ── HDF5 Loading ─────────────────────────────────────────────────────
+    for i in range(dim):
+        lbl = _joint_label(info, i, 'observation.state')
+        axes[0].plot(t, qpos[:, i], label=lbl)
+    axes[0].set_title('Observation State (qpos) over Time')
+    axes[0].set_ylabel('Position (rad)')
+    axes[0].legend(fontsize=6, ncol=4)
+    axes[0].grid(True, alpha=0.4)
 
-    @staticmethod
-    def load_hdf5(dataset_path, use_depth=False):
-        """
-        Load robot trajectory data from an HDF5 file.
+    for i in range(action.shape[1]):
+        lbl = _joint_label(info, i, 'action')
+        axes[1].plot(t, action[:, i], label=lbl)
+    axes[1].set_title('Action over Time')
+    axes[1].set_xlabel('Time (s)')
+    axes[1].set_ylabel('Position (rad)')
+    axes[1].legend(fontsize=6, ncol=4)
+    axes[1].grid(True, alpha=0.4)
 
-        Returns:
-            tuple: (qpos, qvel, effort, actions, image_dict, depth_dict)
-        """
-        if not os.path.isfile(dataset_path):
-            rospy.logerr("Dataset not found: %s", dataset_path)
-            sys.exit(1)
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=120)
+    plt.close(fig)
+    _log(f'Saved joint curve plot → {output_path}')
 
-        with h5py.File(dataset_path, 'r') as root:
-            compressed = root.attrs.get('compress', False)
-            qpos = root['/observations/qpos'][:, :]
-            qvel = root['/observations/qvel'][:, :]
-            action = root['/action'][:, :]
-            effort = (root['/observations/effort'][:, :]
-                      if 'effort' in root['/observations/'] else None)
 
-            image_dict = {
-                cam: root[f'/observations/images/{cam}'][()]
-                for cam in root['/observations/images/'].keys()
-            }
+def stitch_and_save_video(image_dict: dict, output_path: str, fps: float) -> None:
+    """
+    Horizontally stitch multi-camera frames and write an MP4 video.
 
-            depth_dict = None
-            if use_depth and '/observations/images_depth/' in root:
-                depth_dict = {
-                    cam: root[f'/observations/images_depth/{cam}'][()]
-                    for cam in root['/observations/images_depth/'].keys()
-                }
+    Args:
+        image_dict: {camera_name: list[BGR ndarray]}
+        output_path: output .mp4 path
+        fps: output video frame rate
+    """
+    cam_names = [c for c in _STITCH_ORDER if c in image_dict and image_dict[c]]
+    if not cam_names:
+        _log('No camera frames to stitch.', 'warn')
+        return
 
-            compress_len = (root['/compress_len'][()]
-                            if compressed else None)
+    frame_lists = [image_dict[c] for c in cam_names]
+    n_frames = min(len(fl) for fl in frame_lists)
+    if n_frames == 0:
+        _log('All camera frame lists are empty — skipping video.', 'warn')
+        return
 
-        # Decompress JPEG-encoded images if needed
-        if compressed:
-            for cam_name in list(image_dict.keys()):
-                decoded = []
-                for frame in image_dict[cam_name]:
-                    img = cv2.imdecode(frame, cv2.IMREAD_COLOR)
-                    if img is not None:
-                        decoded.append(img)
-                image_dict[cam_name] = decoded
+    h = max(fl[0].shape[0] for fl in frame_lists)
+    w = sum(fl[0].shape[1] for fl in frame_lists)
 
-        return qpos, qvel, effort, action, image_dict, depth_dict
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
 
-    # ── Plotting ─────────────────────────────────────────────────────────
+    for i in tqdm(range(n_frames), desc='Stitching video', ncols=80):
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
+        x = 0
+        for fl in frame_lists:
+            frame = fl[i] if i < len(fl) else np.zeros_like(fl[0])
+            fh, fw = frame.shape[:2]
+            canvas[:fh, x:x + fw] = frame
+            x += fw
+        writer.write(canvas)
 
-    def plot_qpos_action(self, qpos, action, output_dir=None):
-        """Plot joint-position and action curves; optionally save to *output_dir*."""
-        timesteps = range(qpos.shape[0])
-        fig, axs = plt.subplots(2, 1, figsize=(10, 8))
+    writer.release()
+    _log(f'Saved stitched video → {output_path}')
 
-        for i in range(qpos.shape[1]):
-            axs[0].plot(timesteps, qpos[:, i], label=f'Joint {i + 1}')
-        axs[0].set_title('Joint Position (qpos) Over Time')
-        axs[0].set_xlabel('Timestep')
-        axs[0].set_ylabel('Position')
-        axs[0].legend()
-        axs[0].grid(True)
 
-        for i in range(action.shape[1]):
-            axs[1].plot(timesteps, action[:, i], label=f'Action {i + 1}')
-        axs[1].set_title('Action Over Time')
-        axs[1].set_xlabel('Timestep')
-        axs[1].set_ylabel('Action Value')
-        axs[1].legend()
-        axs[1].grid(True)
+# ═════════════════════════════════════════════════════════════════════════════
+#  Real-robot replay (optional)
+# ═════════════════════════════════════════════════════════════════════════════
 
-        plt.tight_layout()
-
-        if output_dir is not None:
-            os.makedirs(output_dir, exist_ok=True)
-            fig.savefig(os.path.join(
-                output_dir, f'qpos_action_{self.args.episode_idx}.png'))
-        plt.close(fig)
-
-    # ── Video Stitching ──────────────────────────────────────────────────
-    def stitch_and_save_videos(self, image_dict, output_path,
-                               mode='rgb', fps=10):
-        """
-        Horizontally stitch multi-camera frames and write an MP4 video.
-
-        Args:
-            image_dict: ``{cam_name: list_of_frames}``
-            output_path: path for the output ``.mp4`` file.
-            mode: ``'rgb'`` or ``'depth'``.
-            fps: output video frame rate.
-        """
-        if mode not in ('rgb', 'depth'):
-            raise ValueError("mode must be 'rgb' or 'depth'")
-
-        cam_names = [c for c in self._STITCH_ORDER if c in image_dict]
-        if not cam_names:
-            rospy.logwarn("No camera data to stitch.")
-            return
-
-        frames_list = [image_dict[c] for c in cam_names]
-
-        # Normalize depth frames to 8-bit BGR
-        if mode == 'depth':
-            for i, frames in enumerate(frames_list):
-                frames_list[i] = [
-                    cv2.cvtColor(
-                        cv2.normalize(f, None, 0, 255,
-                                      cv2.NORM_MINMAX).astype(np.uint8),
-                        cv2.COLOR_GRAY2BGR)
-                    for f in frames
-                ]
-        heights = [frames[0].shape[0] for frames in frames_list]
-        widths = [frames[0].shape[1] for frames in frames_list]
-        out_h = max(heights)
-        out_w = sum(widths)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(output_path, fourcc, fps, (out_w, out_h))
-
-        for frame_set in tqdm(zip(*frames_list),
-                              desc=f"Stitching {mode} video"):
-            canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-            x = 0
-            for frame in frame_set:
-                h, w = frame.shape[:2]
-                canvas[:h, x:x + w] = frame
-                x += w
-            writer.write(cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
-
-        writer.release()
-        rospy.loginfo("Saved stitched %s video → %s", mode, output_path)
-
-    # ── Real-Robot Replay (optional) ─────────────────────────────────────
-
-    def replay_trajectory_on_robot(self):
-        """Replay loaded actions on physical Piper arms via the SDK."""
+def replay_on_robot(actions: np.ndarray, fps: float,
+                    can_left: str, can_right: str) -> None:
+    """Send action sequence to real Piper arms via the SDK."""
+    try:
         from piper_sdk import C_PiperInterface
-        import time
+    except ImportError:
+        _log('piper_sdk not installed — cannot replay on robot.', 'error')
+        return
 
-        rospy.loginfo("Connecting arms for replay …")
-        piper_left = C_PiperInterface(can_name='can_left')
-        piper_left.ConnectPort()
-        piper_right = C_PiperInterface(can_name='can_right')
-        piper_right.ConnectPort()
+    import time
 
-        piper_left.EnableArm(7)
-        piper_right.EnableArm(7)
+    _log(f'Connecting arms: can_left={can_left}  can_right={can_right}')
+    piper_left = C_PiperInterface(can_name=can_left)
+    piper_left.ConnectPort()
+    piper_right = C_PiperInterface(can_name=can_right)
+    piper_right.ConnectPort()
 
-        # Move to zero position first
-        for piper in (piper_left, piper_right):
-            piper.MotionCtrl_2(0x01, 0x01, 20)
-            piper.JointCtrl(0, 0, 0, 0, 0, 0)
-        time.sleep(2)
+    piper_left.EnableArm(7)
+    piper_right.EnableArm(7)
+    time.sleep(1.0)
 
-        rate = rospy.Rate(self.args.frame_rate)
-        for action in tqdm(self.actions, desc="Replaying trajectory"):
-            left_action = action[:7]
-            right_action = action[7:]
+    # Move to zero first
+    for arm in (piper_left, piper_right):
+        arm.MotionCtrl_2(0x01, 0x01, 20)
+        arm.JointCtrl(0, 0, 0, 0, 0, 0)
+    time.sleep(2.0)
 
-            left_joints = [int(v * RAD_TO_DEG_X1000) for v in left_action[:6]]
-            left_grip = int(abs(left_action[6] * GRIPPER_SCALE))
+    dt = 1.0 / fps
+    _log(f'Replaying {len(actions)} frames at {fps} Hz …')
+    for action in tqdm(actions, desc='Replaying', ncols=80):
+        left_action = action[:7]
+        right_action = action[7:14]
 
-            right_joints = [int(v * RAD_TO_DEG_X1000) for v in right_action[:6]]
-            right_grip = int(abs(right_action[6] * GRIPPER_SCALE))
+        left_joints = [int(v * RAD_TO_DEG_X1000) for v in left_action[:6]]
+        left_grip = int(abs(left_action[6] * GRIPPER_SCALE))
 
-            piper_left.MotionCtrl_2(0x01, 0x01, 60)
-            piper_left.JointCtrl(*left_joints)
-            piper_left.GripperCtrl(left_grip, 1000, 0x01, 0)
+        right_joints = [int(v * RAD_TO_DEG_X1000) for v in right_action[:6]]
+        right_grip = int(abs(right_action[6] * GRIPPER_SCALE))
 
-            piper_right.MotionCtrl_2(0x01, 0x01, 60)
-            piper_right.JointCtrl(*right_joints)
-            piper_right.GripperCtrl(right_grip, 1000, 0x01, 0)
+        piper_left.MotionCtrl_2(0x01, 0x01, 60)
+        piper_left.JointCtrl(*left_joints)
+        piper_left.GripperCtrl(left_grip, 1000, 0x01, 0)
 
-            rate.sleep()
+        piper_right.MotionCtrl_2(0x01, 0x01, 60)
+        piper_right.JointCtrl(*right_joints)
+        piper_right.GripperCtrl(right_grip, 1000, 0x01, 0)
 
-        rospy.loginfo("Trajectory replay finished.")
+        time.sleep(dt)
+
+    _log('Trajectory replay finished.')
 
 
-# ── CLI ──────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#  Main
+# ═════════════════════════════════════════════════════════════════════════════
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description='Replay an HDF5 episode and visualize data.')
+        description='Replay / visualize a LeRobot v3 dataset episode.')
     parser.add_argument('--dataset_dir', type=str,
-                        default='/home/user/hdd_4t/data/data_hdf5/MoveTube_0604')
-    parser.add_argument('--task_name', type=str, default='The_right_robotic_arm_picks_up_a_test_tube_from_the_right_rack.')
-    parser.add_argument('--episode_idx', type=int, default=0)
-    parser.add_argument('--camera_names', type=str,
-                        default='cam_top,cam_left,cam_right')
-    parser.add_argument('--master_arm_topic', type=str,
-                        default='joint_ctrl_single')
-    parser.add_argument('--slave_arm_topic', type=str,
-                        default='/joint_states')
-    parser.add_argument('--frame_rate', type=int, default=20)
-    args = parser.parse_args()
-    if isinstance(args.camera_names, str):
-        args.camera_names = [c.strip() for c in args.camera_names.split(',')]
-    return args
+                        default='/home/user/hdd_4t/data/data_lerobot3/LiquidTransport_0614',
+                        help='Root directory of the LeRobot v3 dataset.')
+    parser.add_argument('--episode_idx', type=int, default=0,
+                        help='Episode index to replay / visualize.')
+    parser.add_argument('--output_dir', type=str, default=None,
+                        help='Output directory for plots and videos. '
+                             'Defaults to <dataset_dir>/replay_output.')
+    parser.add_argument('--no_plot', action='store_true',
+                        help='Skip joint-curve plot generation.')
+    parser.add_argument('--no_video', action='store_true',default=True,
+                        help='Skip stitched video generation.')
+    parser.add_argument('--replay_on_robot', action='store_true',
+                        help='Send actions to real Piper arms via CAN bus.')
+    parser.add_argument('--can_left', type=str, default='can_left',
+                        help='CAN port for the left arm (robot replay only).')
+    parser.add_argument('--can_right', type=str, default='can_right',
+                        help='CAN port for the right arm (robot replay only).')
+    return parser.parse_args()
 
 
 def main():
-    try:
-        args = _parse_args()
-        rospy.loginfo("data_replay_node starting …")
-        DataReplayNode(args)
+    if _HAS_ROS:
+        rospy.init_node('data_replay_node', anonymous=True)
+
+    args = _parse_args()
+
+    dataset_dir = args.dataset_dir
+    episode_idx = args.episode_idx
+    output_dir = args.output_dir or os.path.join(dataset_dir, 'replay_output')
+
+    # ── Load dataset metadata ──────────────────────────────────────────────
+    _log(f'Loading dataset: {dataset_dir}')
+    info = _load_info(dataset_dir)
+    fps = float(info.get('fps', 20))
+    camera_names = [
+        k.replace('observation.images.', '')
+        for k in info.get('features', {})
+        if k.startswith('observation.images.')
+    ]
+    subtasks = _load_subtasks(dataset_dir)
+
+    _log(f'  total_episodes : {info.get("total_episodes")}')
+    _log(f'  total_frames   : {info.get("total_frames")}')
+    _log(f'  fps            : {fps}')
+    _log(f'  cameras        : {camera_names}')
+    _log(f'  subtasks       : {subtasks}')
+
+    # ── Load episode ───────────────────────────────────────────────────────
+    _log(f'Loading episode {episode_idx} …')
+    ep_meta = _load_episode_meta(dataset_dir, episode_idx)
+    ep_df = _load_episode_data(dataset_dir, ep_meta)
+
+    n_frames = len(ep_df)
+    _log(f'  frames: {n_frames}  length: {ep_meta["length"]}')
+
+    # ── Extract arrays ─────────────────────────────────────────────────────
+    qpos = np.stack(ep_df['observation.state'].values).astype(np.float32)
+    action = np.stack(ep_df['action'].values).astype(np.float32)
+
+    if subtasks and 'subtask_index' in ep_df.columns:
+        unique_st = ep_df['subtask_index'].dropna().unique()
+        _log(f'  subtasks in episode: {[subtasks.get(int(i), i) for i in sorted(unique_st)]}')
+
+    # ── Plot joint curves ──────────────────────────────────────────────────
+    if not args.no_plot:
+        plot_path = os.path.join(output_dir, f'qpos_action_ep{episode_idx:04d}.png')
+        plot_qpos_action(qpos, action, info, plot_path)
+
+    # ── Load and stitch camera videos ──────────────────────────────────────
+    if not args.no_video:
+        image_dict = {}
+        for cam in camera_names:
+            _log(f'  loading camera: {cam}')
+            frames = _load_camera_frames(dataset_dir, ep_meta, cam, fps)
+            _log(f'    → {len(frames)} frames')
+            image_dict[cam] = frames
+
+        video_path = os.path.join(output_dir, f'stitched_ep{episode_idx:04d}.mp4')
+        stitch_and_save_video(image_dict, video_path, fps)
+
+    # ── Optional robot replay ──────────────────────────────────────────────
+    if args.replay_on_robot:
+        replay_on_robot(action, fps, args.can_left, args.can_right)
+
+    _log(f'Done. Output dir: {output_dir}')
+
+    if _HAS_ROS and rospy.core.is_initialized():
         rospy.spin()
-    except rospy.ROSInterruptException:
-        pass
 
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
-
