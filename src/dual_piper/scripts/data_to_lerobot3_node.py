@@ -129,6 +129,16 @@ class LeRobotCollectorNode:
             use_subtask      = P('~use_subtask',      sub.get('enabled', True)),
             use_videos       = P('~use_videos',       cam.get('use_videos', True)),
             resume           = P('~resume',           ds.get('resume', True)),
+            # Video encoding speed-ups:
+            #   video_codec        — 'h264_nvenc'/'hevc_nvenc' use the GPU (NVENC) and are
+            #                        ~3x faster than the software 'libsvtav1' default.
+            #   streaming_encoding — encode frames in real time during collection instead of
+            #                        writing PNGs to disk and re-encoding at save time. This
+            #                        removes the disk round-trip and makes 's' near-instant.
+            #   encoder_threads    — threads per software encoder (ignored for NVENC).
+            video_codec        = P('~video_codec',        ds.get('video_codec', 'h264_nvenc')),
+            streaming_encoding = P('~streaming_encoding', col.get('streaming_encoding', True)),
+            encoder_threads    = P('~encoder_threads',    col.get('encoder_threads', 4)),
 
             img_top_topic              = P('~img_top_topic',              top.get('img_top', '/cam_top/cam_top/color/image_raw')),
             img_leftwrist_topic        = P('~img_leftwrist_topic',        top.get('img_left', '/cam_leftwrist/cam_leftwrist/color/image_raw')),
@@ -221,18 +231,35 @@ class LeRobotCollectorNode:
                 rospy.loginfo(f'Resuming existing dataset at {target}')
                 # Repair any corrupted parquet files left by a previous crash
                 self._repair_corrupted_parquets(target)
+                # Reuse the codec the dataset was originally created with so new
+                # episodes stay consistent with the existing video files. We can
+                # still enable streaming encoding (it works with any codec).
+                existing_codec = self._get_local_video_codec(target, cfg.video_codec)
+                if existing_codec != cfg.video_codec:
+                    rospy.logwarn(
+                        f'Existing dataset uses codec "{existing_codec}"; keeping it on '
+                        f'resume (config requested "{cfg.video_codec}"). Start a fresh '
+                        f'dataset to switch codecs.'
+                    )
                 self.dataset = LeRobotDataset(
                     repo_id=cfg.repo_id,
                     root=cfg.target_dir,
                     tolerance_s=1e-4,
                     # Use local revision to avoid contacting HuggingFace Hub
                     revision=self._get_local_codebase_version(target),
+                    vcodec=existing_codec,
+                    streaming_encoding=cfg.streaming_encoding,
+                    encoder_threads=cfg.encoder_threads,
                 )
                 # Initialize recording-related attributes that __init__ doesn't set
                 self.dataset.episode_buffer = self.dataset.create_episode_buffer()
-                self.dataset.start_image_writer(num_processes=0, num_threads=4)
+                # Streaming encoder feeds frames directly; the PNG image writer is
+                # only needed for non-video (image) features.
+                if not cfg.streaming_encoding:
+                    self.dataset.start_image_writer(num_processes=0, num_threads=4)
                 rospy.loginfo(
-                    f'  existing episodes={self.dataset.meta.total_episodes}  '
+                    f'  codec={existing_codec}  streaming={cfg.streaming_encoding}  '
+                    f'existing episodes={self.dataset.meta.total_episodes}  '
                     f'frames={self.dataset.meta.total_frames}'
                 )
                 return
@@ -289,6 +316,13 @@ class LeRobotCollectorNode:
             tolerance_s=1e-4,
             image_writer_processes=0,
             image_writer_threads=4,
+            vcodec=cfg.video_codec,
+            streaming_encoding=cfg.streaming_encoding,
+            encoder_threads=cfg.encoder_threads,
+        )
+        rospy.loginfo(
+            f'Video encoding: codec={cfg.video_codec}  '
+            f'streaming={cfg.streaming_encoding}'
         )
 
         # ── Write meta/subtasks.parquet ───────────────────────────────
@@ -306,6 +340,28 @@ class LeRobotCollectorNode:
                 info = json.load(f)
             return info.get('codebase_version', 'v3.0')
         return 'v3.0'
+
+    @staticmethod
+    def _get_local_video_codec(target_dir: str, default: str) -> str:
+        """Read the video codec an existing dataset was encoded with.
+
+        LeRobot stores the codec under each video feature's ``info`` block as
+        ``video.codec`` (e.g. 'av1', 'h264', 'hevc'). We map the stream codec
+        name back to the ffmpeg encoder name so it can be reused on resume.
+        Returns *default* if no codec can be determined.
+        """
+        info_path = os.path.join(target_dir, 'meta', 'info.json')
+        if not os.path.isfile(info_path):
+            return default
+        with open(info_path, 'r') as f:
+            info = json.load(f)
+        # Stream-codec-name → ffmpeg-encoder-name
+        codec_to_encoder = {'av1': 'libsvtav1', 'h264': 'h264_nvenc', 'hevc': 'hevc_nvenc'}
+        for feat in info.get('features', {}).values():
+            codec = feat.get('info', {}).get('video.codec')
+            if codec:
+                return codec_to_encoder.get(codec, codec)
+        return default
 
     @staticmethod
     def _repair_corrupted_parquets(target_dir: str):
