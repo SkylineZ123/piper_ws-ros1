@@ -163,7 +163,7 @@ class DualPiperStateNode:
         try:
             # ── Master (actual joint feedback) ───────────────────────────
             master_msg.header.stamp = stamp
-            joint = piper.GetArmJointMsgs().joint_state
+            joint = piper.GetArmJointCtrl().joint_ctrl
             gripper = piper.GetArmGripperCtrl().gripper_ctrl
             speed = piper.GetArmHighSpdInfoMsgs()
 
@@ -194,7 +194,7 @@ class DualPiperStateNode:
 
             # ── Slave (commanded joint target) ───────────────────────────
             slave_msg.header.stamp = stamp
-            s_joint = piper.GetArmJointMsgs().joint_state
+            s_joint = piper.GetArmJointCtrl().joint_ctrl
             s_gripper = piper.GetArmGripperCtrl().gripper_ctrl
 
             slave_msg.position = [

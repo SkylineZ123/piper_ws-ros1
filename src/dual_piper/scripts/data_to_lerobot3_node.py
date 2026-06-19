@@ -89,8 +89,9 @@ def _confirm_overwrite(target_dir: str) -> bool:
 class LeRobotCollectorNode:
     """
     ROS node that subscribes to camera / joint-state / point-cloud topics,
-    buffers synchronised frames, and writes each episode directly into a
-    LeRobot v3.0 dataset (Parquet + MP4).
+    streams synchronised frames live into a LeRobot v3.0 dataset (Parquet +
+    MP4) as they are collected, so video encoding overlaps with recording and
+    saving an episode only finalises the already-encoded data.
     """
     def __init__(self):
         # ── Load YAML Config ─────────────────────────────────────────────
@@ -177,8 +178,10 @@ class LeRobotCollectorNode:
         self._init_queues()
         # ── ROS Subscribers ──────────────────────────────────────────────
         self._init_subscribers()
-        # ── Frame Buffer (per-episode, before save_episode) ──────────────
-        self.frame_buffer: list = []
+        # Frames are streamed straight into the LeRobot episode buffer during
+        # collection (see _append_frame), so video encoding overlaps with
+        # recording and 's' (save) only has to finalize the already-encoded
+        # episode instead of processing every frame in one burst.
         self.collecting = False
         self.current_subtask = self.subtasks[self._first_subtask_key]
         # ── LeRobot Dataset ──────────────────────────────────────────────
@@ -547,12 +550,18 @@ class LeRobotCollectorNode:
     # ─────────────────────── Collection Loop ─────────────────────────────
     def _collect(self):
         """
-        Collect frames into self.frame_buffer until paused or max_timesteps reached.
-        Each buffer entry = {qpos, action, images, subtask} dict.
+        Stream synchronised frames straight into the LeRobot episode buffer
+        until paused or max_timesteps reached.
+
+        Feeding frames live (via _append_frame → dataset.add_frame) makes the
+        streaming video encoder run *concurrently* with collection: each frame
+        is encoded as it arrives instead of in one burst at save time. This
+        also avoids encoder-queue overflow (feed_frame drops frames when the
+        queue fills), and means 's' only finalises an already-encoded episode.
         """
         cfg = self.cfg
         rate = rospy.Rate(cfg.fps)
-        count = len(self.frame_buffer)
+        count = self.dataset.episode_buffer['size']
         rospy.loginfo(f'▶ Collecting from frame {count} (max {cfg.max_timesteps})')
         rospy.loginfo(f'  Current subtask: {self.current_subtask}')
 
@@ -571,26 +580,7 @@ class LeRobotCollectorNode:
                 rate.sleep()
                 continue
 
-            ls = frame['left/slave']
-            rs = frame['right/slave']
-            lm = frame['left/master']
-            rm = frame['right/master']
-
-            # Joint state vectors (7 DOF per arm)
-            qpos = np.concatenate([np.array(ls.position)[:7], np.array(rs.position)[:7]])
-            action = np.concatenate([np.array(lm.position)[:7], np.array(rm.position)[:7]])
-
-            # Build the buffered frame dict
-            entry = {
-                'qpos': qpos.astype(np.float32),
-                'action': action.astype(np.float32),
-                'images': {cam: img.copy() for cam, img in frame['images'].items()},
-                'subtask': self.current_subtask,
-            }
-            if cfg.save_pointcloud and frame['pointcloud'] is not None:
-                entry['pointcloud'] = frame['pointcloud']
-
-            self.frame_buffer.append(entry)
+            self._append_frame(frame)
             count += 1
             pbar.update(1)
             rate.sleep()
@@ -600,11 +590,57 @@ class LeRobotCollectorNode:
             rospy.loginfo(f'⏹ Reached max_timesteps ({cfg.max_timesteps})')
             self.collecting = False
 
+    def _append_frame(self, frame):
+        """Convert one synced frame and stream it into the episode buffer.
+
+        Builds the LeRobot frame dict and calls ``dataset.add_frame`` so the
+        per-frame cost (BGR→RGB conversion + handing the image to the streaming
+        encoder) is paid during recording, at the natural FPS pace, rather than
+        all at once when the episode is saved.
+        """
+        cfg = self.cfg
+        ls = frame['left/slave']
+        rs = frame['right/slave']
+        lm = frame['left/master']
+        rm = frame['right/master']
+
+        # Joint state vectors (7 DOF per arm)
+        qpos = np.concatenate([np.array(ls.position)[:7], np.array(rs.position)[:7]])
+        action = np.concatenate([np.array(lm.position)[:7], np.array(rm.position)[:7]])
+
+        lr_frame = {
+            'observation.state': qpos.astype(np.float32),
+            'action': action.astype(np.float32),
+            'task': cfg.task_name,
+        }
+        for cam in cfg.camera_names:
+            img = frame['images'].get(cam)
+            if img is not None:
+                if img.dtype != np.uint8:
+                    img = img.astype(np.uint8)
+                # Convert BGR (from OpenCV/ROS) → RGB (expected by LeRobot/PIL)
+                lr_frame[f'observation.images.{cam}'] = img[:, :, ::-1].copy()
+
+        if cfg.save_pointcloud and frame.get('pointcloud') is not None:
+            lr_frame['observation.pointcloud'] = frame['pointcloud'].astype(np.float32)
+
+        # Per-frame subtask_index — shape must be (1,) to match feature schema
+        if cfg.use_subtask:
+            lr_frame['subtask_index'] = np.array(
+                [self.subtask_name_to_idx[self.current_subtask]], dtype=np.int64
+            )
+
+        self.dataset.add_frame(lr_frame)
+
     # ─────────────────────── Save Episode ────────────────────────────────
     def _save_episode(self):
         """
-        Flush self.frame_buffer into the LeRobot dataset as one episode.
-        Uses dataset.add_frame() + dataset.save_episode().
+        Finalise the in-progress episode.
+
+        Frames were already streamed into the LeRobot episode buffer (and the
+        video encoder) live during collection by _append_frame, so this only
+        has to flush the encoder and write the episode's parquet/metadata —
+        making 's' near-instant regardless of episode length.
 
         Task/subtask strategy (aligned with LeRobot v3):
           - task:  high-level task name (cfg.task_name), same for all frames.
@@ -612,43 +648,15 @@ class LeRobotCollectorNode:
           - subtask_index:  per-frame int64 index into meta/subtasks.parquet,
                    allowing fine-grained step tracking within an episode.
         """
-        if not self.frame_buffer:
-            rospy.logwarn('Nothing to save — frame buffer is empty.')
+        n = self.dataset.episode_buffer['size']
+        if n == 0:
+            rospy.logwarn('Nothing to save — episode buffer is empty.')
             return
-
-        cfg = self.cfg
-        n = len(self.frame_buffer)
 
         if n < 10:
             rospy.logwarn(f'Episode has only {n} frames — consider discarding (r).')
 
-        rospy.loginfo(f'💾 Saving episode with {n} frames …')
-
-        for entry in self.frame_buffer:
-            frame = {
-                'observation.state': entry['qpos'],
-                'action': entry['action'],
-                'task': cfg.task_name,
-            }
-            for cam in cfg.camera_names:
-                img = entry['images'].get(cam)
-                if img is not None:
-                    if img.dtype != np.uint8:
-                        img = img.astype(np.uint8)
-                    # Convert BGR (from OpenCV/ROS) → RGB (expected by LeRobot/PIL)
-                    img = img[:, :, ::-1].copy()
-                    frame[f'observation.images.{cam}'] = img
-
-            if cfg.save_pointcloud and 'pointcloud' in entry:
-                frame['observation.pointcloud'] = entry['pointcloud'].astype(np.float32)
-
-            # Per-frame subtask_index — shape must be (1,) to match feature schema
-            if cfg.use_subtask:
-                frame['subtask_index'] = np.array(
-                    [self.subtask_name_to_idx[entry['subtask']]], dtype=np.int64
-                )
-
-            self.dataset.add_frame(frame)
+        rospy.loginfo(f'💾 Finalizing episode with {n} frames …')
 
         self.dataset.save_episode()
         # Flush metadata buffer to disk immediately so that episode files
@@ -661,7 +669,7 @@ class LeRobotCollectorNode:
             f'✅ Episode {ep_idx} saved  |  total_episodes={self.dataset.meta.total_episodes}  '
             f'total_frames={self.dataset.meta.total_frames}'
         )
-        self.frame_buffer.clear()
+        # save_episode() already resets the episode buffer; just reset the subtask.
         self.current_subtask = self.subtasks[self._first_subtask_key]
 
     # ─────────────────────── Keyboard & Command Loop ─────────────────────
@@ -689,7 +697,10 @@ class LeRobotCollectorNode:
             elif k == 's' and not self.collecting:
                 self._save_episode()
             elif k == 'r':
-                self.frame_buffer.clear()
+                # Cancel the streaming encoder + drop partial video/images and
+                # reset the episode buffer (no-op if nothing buffered yet).
+                if self.dataset.episode_buffer['size'] > 0:
+                    self.dataset.clear_episode_buffer()
                 self.current_subtask = self.subtasks[self._first_subtask_key]
                 self.collecting = False
                 rospy.loginfo('🗑 Buffer cleared, subtask reset.')

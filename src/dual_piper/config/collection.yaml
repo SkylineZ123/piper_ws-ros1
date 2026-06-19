@@ -10,20 +10,25 @@
 
 # ── Dataset ───────────────────────────────────────────────────────────────
 dataset:
-  repo_id: "RoboMLT/LiquidTransport_0614"
-#  repo_id: "Medical_20260608"
-  target_dir: "/home/user/hdd_4t/data/data_lerobot3/LiquidTransport_0614"
-#  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/TestTubeExchange_0424"
-  task_name: "pick and place test tube."
+#  repo_id: "RoboMLT/PickandPlaceTube_0614"
+  repo_id: "RoboMLT/BloodGasAnalysis"
+#  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/PickandPlaceTube_0614"
+  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260618"
+  task_name: "blood gas sample analysis"
   robot_type: "dual_piper"
-  fps: 20
-  resume: false          # true = append to existing dataset; false = fresh start
+  fps: 30
+  resume: true          # true = append to existingq dataset; false = fresh start
+  video_codec: "h264_nvenc"
   # Subtask definitions (key = keyboard shortcut, value = natural-language description).
   # Only used when subtask.enabled = true.
   subtasks:
-    '1': 'pick up the test tube from the rack.'
-    '2': 'place the test tube to the plate.'
-    '3': 'return to the initial position.'
+    '1': 'grasp the blood gas sample tube.'
+    '2': 'remove the sample tube cap.'
+    '3': 'discard the tube cap into the waste bin.'
+    '4': 'dock the blood gas sample tube to the blood gas analyzer.'
+    '5': 'withdraw the blood gas sample tube after testing is complete.'
+    '6': 'discard the tested blood sample into the waste bin.'
+    '7': 'return the robotic arm to the home position.'
 #  subtasks:
 #    '1': 'The right robotic arm picks up a test tube from the right rack.'
 #    '2': 'The test tube is transferred from the right arm to the left arm.'
@@ -40,10 +45,16 @@ robot:
 # ── Collection ────────────────────────────────────────────────────────────
 collection:
   max_timesteps: 10000   # max frames per episode before auto-pause
+  # Encode video frames in real time during collection instead of writing PNGs
+  # to disk and re-encoding at save time. Removes the disk round-trip and makes
+  # saving (key 's') near-instant. Set to false to fall back to batch encoding.
+  streaming_encoding: true
+  encoder_threads: 4     # threads per software encoder (ignored for NVENC)
 
 # ── Camera ────────────────────────────────────────────────────────────────
 camera:
-  names: ["cam_top", "cam_left","cam_right"]
+  names: ["cam_top", "cam_left", "cam_right"]
+#  names: ["cam_top", "cam_left","cam_right"]
   image_height: 480
   image_width: 640
   use_depth: false
@@ -52,7 +63,7 @@ camera:
 # ── Point Cloud ───────────────────────────────────────────────────────────
 pointcloud:
   enabled: false
-  target_points: 5000
+  target_points: 10000
 
 # ── Subtask ───────────────────────────────────────────────────────────────
 subtask:
@@ -82,7 +93,7 @@ replay:
   replay_on_robot: false # send actions to physical arms
   plot_joints: true     # save joint-position / action plots
   stitch_video: true    # save stitched multi-camera video
-  video_fps: 20         # output video frame rate (should match dataset fps)
+  video_fps: 30         # output video frame rate (should match dataset fps)
   # CAN ports for real-robot replay
   can_left: "can_left"
   can_right: "can_right"
