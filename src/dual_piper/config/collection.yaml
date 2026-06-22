@@ -45,6 +45,10 @@ robot:
 # ── Collection ────────────────────────────────────────────────────────────
 collection:
   max_timesteps: 10000   # max frames per episode before auto-pause
+  # Record a per-frame back_event flag. Toggle error mode with 'e' while collecting: flagged frames
+  # (back_event=1) are System-2 back-head positives and are excluded from System-1 (VLA) training.
+  # NOTE: a new column can't be added on resume — start a fresh dataset for back-event collection.
+  use_back_event: true
   # Encode video frames in real time during collection instead of writing PNGs
   # to disk and re-encoding at save time. Removes the disk round-trip and makes
   # saving (key 's') near-instant. Set to false to fall back to batch encoding.

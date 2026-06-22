@@ -13,6 +13,7 @@ ROS parameters (~key) can still override individual values.
 Controls:
     c     - Start / resume collecting
     space - Pause collecting
+    e     - Toggle error mode while collecting (flags frames back_event=1 → System-2 replan trigger)
     1-N   - Switch subtask (while paused)
     s     - Save current episode
     r     - Discard buffered frames
@@ -128,6 +129,7 @@ class LeRobotCollectorNode:
             save_pointcloud  = P('~save_pointcloud',  pc.get('enabled', False)),
             pc_target_points = P('~pc_target_points', pc.get('target_points', 5000)),
             use_subtask      = P('~use_subtask',      sub.get('enabled', True)),
+            use_back_event   = P('~use_back_event',   col.get('use_back_event', True)),
             use_videos       = P('~use_videos',       cam.get('use_videos', True)),
             resume           = P('~resume',           ds.get('resume', True)),
             # Video encoding speed-ups:
@@ -183,6 +185,10 @@ class LeRobotCollectorNode:
         # recording and 's' (save) only has to finalize the already-encoded
         # episode instead of processing every frame in one burst.
         self.collecting = False
+        # Error-mode: when True, frames recorded during collection are flagged back_event=1
+        # (states from which the robot should trigger a System-2 replan). Toggled with 'e' while
+        # collecting; auto-reset on pause / save / discard / subtask-switch so it never leaks.
+        self._error_mode = False
         self.current_subtask = self.subtasks[self._first_subtask_key]
         # ── LeRobot Dataset ──────────────────────────────────────────────
         self.dataset = None
@@ -265,6 +271,15 @@ class LeRobotCollectorNode:
                     f'existing episodes={self.dataset.meta.total_episodes}  '
                     f'frames={self.dataset.meta.total_frames}'
                 )
+                # A resumed dataset cannot gain a new column mid-stream. If back_event was requested
+                # but the existing dataset lacks it, disable it so add_frame doesn't fail on the extra
+                # key — back-event collection requires a fresh dataset.
+                if cfg.use_back_event and 'back_event' not in self.dataset.meta.features:
+                    rospy.logwarn(
+                        "use_back_event=True but the resumed dataset has no 'back_event' column; "
+                        "disabling it for this run. Start a fresh dataset to collect back events."
+                    )
+                    cfg.use_back_event = False
                 return
 
             # ── Confirm before overwriting ─────────────────────────────
@@ -304,6 +319,15 @@ class LeRobotCollectorNode:
         # Subtask as int64 index (aligned with LeRobot subtask_index system)
         if cfg.use_subtask:
             features['subtask_index'] = {
+                'dtype': 'int64',
+                'shape': (1,),
+                'names': None,
+            }
+        # Per-frame back-event flag (0/1): 1 marks an erroneous, unrecoverable state that should
+        # trigger a System-2 replan. Used as the back-head positive label by System 2, and as the
+        # exclusion mask for System 1 (the VLA must not imitate these bad actions).
+        if cfg.use_back_event:
+            features['back_event'] = {
                 'dtype': 'int64',
                 'shape': (1,),
                 'names': None,
@@ -568,12 +592,20 @@ class LeRobotCollectorNode:
         pbar = tqdm(total=cfg.max_timesteps, desc='Collecting', ncols=80, initial=count)
 
         while not rospy.is_shutdown() and count < cfg.max_timesteps:
-            # Check pause (atomic read+clear)
-            if self._consume_key() == 'space':
+            # Handle in-collection keys (atomic read+clear): 'space' pauses, 'e' toggles error mode.
+            k = self._consume_key()
+            if k == 'space':
                 rospy.loginfo(f'⏸ Paused at frame {count}')
+                self._error_mode = False  # never leak error mode across a pause
                 self.collecting = False
                 pbar.close()
                 return
+            elif k == 'e' and cfg.use_back_event:
+                self._error_mode = not self._error_mode
+                rospy.logwarn(
+                    f"{'🔴 ERROR-mode ON (back_event=1)' if self._error_mode else '🟢 error-mode OFF'} "
+                    f"at frame {count}"
+                )
 
             frame = self._get_synced_frame()
             if frame is None:
@@ -629,6 +661,11 @@ class LeRobotCollectorNode:
             lr_frame['subtask_index'] = np.array(
                 [self.subtask_name_to_idx[self.current_subtask]], dtype=np.int64
             )
+        # Per-frame back-event flag — 1 while error mode is on, else 0.
+        if cfg.use_back_event:
+            lr_frame['back_event'] = np.array(
+                [1 if self._error_mode else 0], dtype=np.int64
+            )
 
         self.dataset.add_frame(lr_frame)
 
@@ -669,8 +706,9 @@ class LeRobotCollectorNode:
             f'✅ Episode {ep_idx} saved  |  total_episodes={self.dataset.meta.total_episodes}  '
             f'total_frames={self.dataset.meta.total_frames}'
         )
-        # save_episode() already resets the episode buffer; just reset the subtask.
+        # save_episode() already resets the episode buffer; just reset the subtask + error mode.
         self.current_subtask = self.subtasks[self._first_subtask_key]
+        self._error_mode = False
 
     # ─────────────────────── Keyboard & Command Loop ─────────────────────
     def _key_poll_loop(self):
@@ -702,10 +740,12 @@ class LeRobotCollectorNode:
                 if self.dataset.episode_buffer['size'] > 0:
                     self.dataset.clear_episode_buffer()
                 self.current_subtask = self.subtasks[self._first_subtask_key]
+                self._error_mode = False
                 self.collecting = False
-                rospy.loginfo('🗑 Buffer cleared, subtask reset.')
+                rospy.loginfo('🗑 Buffer cleared, subtask + error mode reset.')
             elif k in self.subtasks and not self.collecting:
                 self.current_subtask = self.subtasks[k]
+                self._error_mode = False
                 rospy.loginfo(f'🔄 Subtask → {self.current_subtask}')
             elif k == 'q':
                 self._finalize_and_exit()
@@ -749,6 +789,8 @@ class LeRobotCollectorNode:
             '  c     → Start / resume collecting',
             '  space → Pause',
         ]
+        if self.cfg.use_back_event:
+            lines.append('  e     → Toggle error mode (flag back_event=1) while collecting')
         for key, desc in self.subtasks.items():
             lines.append(f'  {key}     → Subtask: {desc}')
         lines += [
