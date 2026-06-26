@@ -1,5 +1,6 @@
 """Shared utilities for the dual_piper package."""
 
+from .status_view import StatusView
 from .utils import (
     # Constants
     DEG_TO_RAD,

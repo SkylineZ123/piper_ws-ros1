@@ -307,9 +307,9 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description='Replay / visualize a LeRobot v3 dataset episode.')
     parser.add_argument('--dataset_dir', type=str,
-                        default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260618',
+                        default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260621',
                         help='Root directory of the LeRobot v3 dataset.')
-    parser.add_argument('--episode_idx', type=int, default=63,
+    parser.add_argument('--episode_idx', type=int, default=150,
                         help='Episode index to replay / visualize.')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory for plots and videos. '

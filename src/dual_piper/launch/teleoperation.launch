@@ -17,7 +17,7 @@
        doc="Automatically enable robot arms on startup"/>
 
   <!-- ── URDF visualization ────────────────────────────────────────── -->
-  <include file="$(find piper_description)/launch/piper_with_gripper/display_xacro.launch"/>
+<!--   <include file="$(find piper_description)/launch/piper_with_gripper/display_xacro.launch"/> -->
 
   <!-- ── State publisher ───────────────────────────────────────────── -->
   <node pkg="dual_piper"
@@ -29,7 +29,7 @@
     <param name="auto_enable"    value="$(arg auto_enable)"/>
   </node>
 
-  <!-- ── Camera arguments ──────────────────────────────────────────── -->
+  <!-- ── Camera arguments  327122074756──────────────────────────────────────────── -->
   <arg name="camera1"     default="cam_top"/>
   <arg name="serial_no_1" default="327122074756"/>
 

@@ -32,6 +32,7 @@ import queue
 import shutil
 import threading
 import collections
+import time
 import types
 from pathlib import Path
 
@@ -43,7 +44,7 @@ from tqdm import tqdm
 from pynput import keyboard
 from sensor_msgs.msg import Image, JointState, PointCloud2
 
-from utils import imgmsg_to_cv2, sample_pointcloud
+from utils import imgmsg_to_cv2, sample_pointcloud, StatusView
 
 # LeRobot v3.0
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -142,6 +143,12 @@ class LeRobotCollectorNode:
             video_codec        = P('~video_codec',        ds.get('video_codec', 'h264_nvenc')),
             streaming_encoding = P('~streaming_encoding', col.get('streaming_encoding', True)),
             encoder_threads    = P('~encoder_threads',    col.get('encoder_threads', 4)),
+            # Live operator view (OpenCV window with camera feeds + status overlay)
+            enable_view        = P('~enable_view',        col.get('enable_view', True)),
+            # view_bgr=False: ROS/OpenCV images are already BGR — no conversion needed.
+            # Set True only if your image source delivers RGB frames.
+            view_bgr           = P('~view_bgr',           col.get('view_bgr', False)),
+            view_max_width     = P('~view_max_width',     col.get('view_max_width', 1280)),
 
             img_top_topic              = P('~img_top_topic',              top.get('img_top', '/cam_top/cam_top/color/image_raw')),
             img_leftwrist_topic        = P('~img_leftwrist_topic',        top.get('img_left', '/cam_leftwrist/cam_leftwrist/color/image_raw')),
@@ -194,6 +201,15 @@ class LeRobotCollectorNode:
         self.dataset = None
         self._finalized = False
         self._create_dataset()
+        # ── Live Operator View (OpenCV) ───────────────────────────────
+        self._view = None
+        if cfg.enable_view:
+            self._view = StatusView(
+                camera_names=cfg.camera_names,
+                bgr=cfg.view_bgr,
+                max_width=cfg.view_max_width,
+                window_name='DualPiper Collect',
+            ).start()
         # ── Shutdown Safety: ensure finalize runs on abnormal exit ─────
         rospy.on_shutdown(self._safe_finalize)
         atexit.register(self._safe_finalize)
@@ -591,7 +607,17 @@ class LeRobotCollectorNode:
 
         pbar = tqdm(total=cfg.max_timesteps, desc='Collecting', ncols=80, initial=count)
 
+        # FPS / elapsed tracking for the live view
+        collect_start = time.time()
+        meas_fps = float(cfg.fps)
+        prev_loop_t = None
+
         while not rospy.is_shutdown() and count < cfg.max_timesteps:
+            loop_t = time.time()
+            if prev_loop_t is not None and (loop_t - prev_loop_t) > 0:
+                meas_fps = 0.9 * meas_fps + 0.1 / (loop_t - prev_loop_t)
+            prev_loop_t = loop_t
+
             # Handle in-collection keys (atomic read+clear): 'space' pauses, 'e' toggles error mode.
             k = self._consume_key()
             if k == 'space':
@@ -615,6 +641,23 @@ class LeRobotCollectorNode:
             self._append_frame(frame)
             count += 1
             pbar.update(1)
+
+            # Push the latest frame + collection state to the live view (non-blocking).
+            if self._view is not None:
+                self._view.update(frame['images'], {
+                    'task': cfg.task_name,
+                    'skill_text': self.current_subtask,
+                    'recording': self.collecting,
+                    'back': self._error_mode,
+                    'step': count,
+                    'elapsed': time.time() - collect_start,
+                    'fps': meas_fps,
+                    'episode_index': self.dataset.meta.total_episodes,
+                    'buffered_frames': count,
+                    'saved_episodes': self.dataset.meta.total_episodes,
+                    'saved_frames': self.dataset.meta.total_frames,
+                })
+
             rate.sleep()
 
         pbar.close()
@@ -759,6 +802,9 @@ class LeRobotCollectorNode:
         if self._finalized:
             return
         self._finalized = True
+        if self._view is not None:
+            self._view.stop()
+            self._view = None
         try:
             rospy.loginfo('📦 Finalizing dataset …')
             if self.dataset is not None:
@@ -801,12 +847,73 @@ class LeRobotCollectorNode:
         ]
         rospy.loginfo('\033[32m' + '\n'.join(lines) + '\033[0m')
 
+    # ─────────────────────── Main-Thread Spin ────────────────────────────
+    def spin(self):
+        """Block the main thread until shutdown.
+
+        When the live view is enabled we drive its rendering here, because
+        OpenCV's GUI must be pumped from the main thread (a background GUI
+        thread silently fails to display under Anaconda's Qt). Subscriber and
+        command threads keep running independently. Falls back to plain
+        rospy.spin() when the view is disabled/unavailable.
+        """
+        if self._view is None or not self._view.enabled:
+            rospy.spin()
+            return
+        rate = rospy.Rate(15)  # GUI refresh rate
+        while not rospy.is_shutdown():
+            # While NOT collecting, keep the view live with the latest camera
+            # frames + current subtask so the operator can frame the scene and
+            # pick a subtask before pressing 'c'. During collection, _collect()
+            # already feeds the view with the synced frames it records, so we
+            # leave it alone to avoid overwriting the recording status.
+            if not self.collecting:
+                self._view.update(self._peek_latest_images(), self._build_idle_status())
+            if not self._view.render_once():  # user pressed q/ESC in the window
+                self._finalize_and_exit()
+                break
+            rate.sleep()
+
+    # ─────────────────────── Live-View Helpers ───────────────────────────
+    def _peek_latest_images(self):
+        """Latest frame from each camera queue for live preview (non-destructive).
+
+        Reads (without popping) the newest ROS image in each camera deque and
+        converts it to a cv2 array, so the preview never consumes frames the
+        collector needs. Returns an empty dict until cameras start publishing.
+        """
+        images = {}
+        for cam in self.cfg.camera_names:
+            q = self.queues.get(cam)
+            if q:
+                try:
+                    images[cam] = imgmsg_to_cv2(q[-1])
+                except Exception:
+                    pass
+        return images
+
+    def _build_idle_status(self):
+        """Status overlay shown when not actively collecting (recording=False)."""
+        buffered = self.dataset.episode_buffer['size'] if self.dataset is not None else 0
+        total_eps = self.dataset.meta.total_episodes if self.dataset is not None else 0
+        total_frames = self.dataset.meta.total_frames if self.dataset is not None else 0
+        return {
+            'task': self.cfg.task_name,
+            'skill_text': self.current_subtask,
+            'recording': False,
+            'back': self._error_mode,
+            'episode_index': total_eps,
+            'buffered_frames': buffered,
+            'saved_episodes': total_eps,
+            'saved_frames': total_frames,
+        }
+
 
 def main():
     try:
         rospy.init_node('data_to_lerobot3_node', anonymous=True)
         node = LeRobotCollectorNode()
-        rospy.spin()
+        node.spin()
     except rospy.ROSInterruptException:
         rospy.loginfo('Shutting down LeRobot collection node.')
 

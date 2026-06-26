@@ -7,17 +7,15 @@
 #   Replay:      rosrun dual_piper data_replay_node.py
 #                  --config config/collection.yaml
 # ═══════════════════════════════════════════════════════════════════════════
-
 # ── Dataset ───────────────────────────────────────────────────────────────
 dataset:
-#  repo_id: "RoboMLT/PickandPlaceTube_0614"
   repo_id: "RoboMLT/BloodGasAnalysis"
 #  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/PickandPlaceTube_0614"
-  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260618"
+  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260626"
   task_name: "blood gas sample analysis"
   robot_type: "dual_piper"
-  fps: 30
-  resume: true          # true = append to existingq dataset; false = fresh start
+  fps: 25
+  resume: false          # true = append to existingq dataset; false = fresh start
   video_codec: "h264_nvenc"
   # Subtask definitions (key = keyboard shortcut, value = natural-language description).
   # Only used when subtask.enabled = true.
@@ -29,12 +27,6 @@ dataset:
     '5': 'withdraw the blood gas sample tube after testing is complete.'
     '6': 'discard the tested blood sample into the waste bin.'
     '7': 'return the robotic arm to the home position.'
-#  subtasks:
-#    '1': 'The right robotic arm picks up a test tube from the right rack.'
-#    '2': 'The test tube is transferred from the right arm to the left arm.'
-#    '3': 'The left robotic arm places the test tube into the left rack.'
-#    '4': 'The robotic arms return to their initial positions.'
-#    '5': 'pass the test tube from the right arm to the left arm.'
 
 # ── Robot ─────────────────────────────────────────────────────────────────
 robot:
@@ -45,20 +37,18 @@ robot:
 # ── Collection ────────────────────────────────────────────────────────────
 collection:
   max_timesteps: 10000   # max frames per episode before auto-pause
-  # Record a per-frame back_event flag. Toggle error mode with 'e' while collecting: flagged frames
-  # (back_event=1) are System-2 back-head positives and are excluded from System-1 (VLA) training.
-  # NOTE: a new column can't be added on resume — start a fresh dataset for back-event collection.
   use_back_event: true
-  # Encode video frames in real time during collection instead of writing PNGs
-  # to disk and re-encoding at save time. Removes the disk round-trip and makes
-  # saving (key 's') near-instant. Set to false to fall back to batch encoding.
   streaming_encoding: true
   encoder_threads: 4     # threads per software encoder (ignored for NVENC)
+  # Live operator view: OpenCV window with tiled camera feeds + status overlay.
+  # Requires a display (set DISPLAY env var or use x11docker for headless machines).
+  enable_view: true      # set true to enable the live view
+  view_bgr: false         # false = images already BGR (imgmsg_to_cv2 returns BGR); true = RGB input
+  view_max_width: 1280    # max pixel width of the tiled camera strip
 
 # ── Camera ────────────────────────────────────────────────────────────────
 camera:
   names: ["cam_top", "cam_left", "cam_right"]
-#  names: ["cam_top", "cam_left","cam_right"]
   image_height: 480
   image_width: 640
   use_depth: false
