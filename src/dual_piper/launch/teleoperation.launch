@@ -55,7 +55,7 @@
       <arg name="color_width"      value="640"/>
       <arg name="color_height"     value="480"/>
       <arg name="color_fps"        value="60"/>
-      <arg name="initial_reset"    value="true"/>
+      <arg name="initial_reset"    value="false"/>
     </include>
   </group>
 
@@ -75,7 +75,7 @@
       <arg name="color_width"      value="640"/>
       <arg name="color_height"     value="480"/>
       <arg name="color_fps"        value="60"/>
-      <arg name="initial_reset"    value="true"/>
+      <arg name="initial_reset"    value="false"/>
     </include>
   </group>
 
@@ -95,7 +95,7 @@
       <arg name="color_width"      value="640"/>
       <arg name="color_height"     value="480"/>
       <arg name="color_fps"        value="60"/>
-      <arg name="initial_reset"    value="true"/>
+      <arg name="initial_reset"    value="false"/>
     </include>
   </group>
 

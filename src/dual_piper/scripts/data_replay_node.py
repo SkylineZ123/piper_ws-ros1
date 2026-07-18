@@ -41,7 +41,8 @@ except ImportError:
 
 def _log(msg: str, level: str = 'info'):
     if _HAS_ROS and rospy.core.is_initialized():
-        getattr(rospy, level)(msg)
+        fn = {'info': 'loginfo', 'warn': 'logwarn', 'error': 'logerr'}.get(level, 'loginfo')
+        getattr(rospy, fn)(msg)
     else:
         prefix = {'info': '[INFO]', 'warn': '[WARN]', 'error': '[ERROR]'}.get(level, '[INFO]')
         print(f'{prefix} {msg}', flush=True)
@@ -276,6 +277,8 @@ def replay_on_robot(actions: np.ndarray, fps: float,
 
     dt = 1.0 / fps
     _log(f'Replaying {len(actions)} frames at {fps} Hz …')
+    piper_left.MotionCtrl_2(0x01, 0x01, 100,0xAD)
+    piper_right.MotionCtrl_2(0x01, 0x01, 100,0xAD)
     for action in tqdm(actions, desc='Replaying', ncols=80):
         left_action = action[:7]
         right_action = action[7:14]
@@ -286,11 +289,9 @@ def replay_on_robot(actions: np.ndarray, fps: float,
         right_joints = [int(v * RAD_TO_DEG_X1000) for v in right_action[:6]]
         right_grip = int(abs(right_action[6] * GRIPPER_SCALE))
 
-        piper_left.MotionCtrl_2(0x01, 0x01, 60)
         piper_left.JointCtrl(*left_joints)
         piper_left.GripperCtrl(left_grip, 1000, 0x01, 0)
 
-        piper_right.MotionCtrl_2(0x01, 0x01, 60)
         piper_right.JointCtrl(*right_joints)
         piper_right.GripperCtrl(right_grip, 1000, 0x01, 0)
 
@@ -307,9 +308,9 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description='Replay / visualize a LeRobot v3 dataset episode.')
     parser.add_argument('--dataset_dir', type=str,
-                        default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260621',
+                        default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/TubeSort_20260703',
                         help='Root directory of the LeRobot v3 dataset.')
-    parser.add_argument('--episode_idx', type=int, default=150,
+    parser.add_argument('--episode_idx', type=int, default=1,
                         help='Episode index to replay / visualize.')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory for plots and videos. '
@@ -340,9 +341,9 @@ def main():
     # ── Load dataset metadata ──────────────────────────────────────────────
     _log(f'Loading dataset: {dataset_dir}')
     info = _load_info(dataset_dir)
-    fps = float(info.get('fps', 5))
+    fps = float(info.get('fps', 25))
 
-    # fps =5
+    # fps =50
     camera_names = [
         k.replace('observation.images.', '')
         for k in info.get('features', {})

@@ -123,6 +123,7 @@ class LeRobotCollectorNode:
             max_timesteps    = P('~max_timesteps',    col.get('max_timesteps', 5000)),
             state_dim        = P('~state_dim',        rob.get('state_dim', 14)),
             action_dim       = P('~action_dim',       rob.get('action_dim', 14)),
+            num_joints_per_arm = P('~num_joints_per_arm', rob.get('num_joints_per_arm', 7)),
             image_h          = P('~image_height',     cam.get('image_height', 180)),
             image_w          = P('~image_width',      cam.get('image_width', 320)),
             camera_names     = P('~camera_names',     cam.get('names', ['cam_top', 'cam_left', 'cam_right'])),
@@ -133,13 +134,6 @@ class LeRobotCollectorNode:
             use_back_event   = P('~use_back_event',   col.get('use_back_event', True)),
             use_videos       = P('~use_videos',       cam.get('use_videos', True)),
             resume           = P('~resume',           ds.get('resume', True)),
-            # Video encoding speed-ups:
-            #   video_codec        — 'h264_nvenc'/'hevc_nvenc' use the GPU (NVENC) and are
-            #                        ~3x faster than the software 'libsvtav1' default.
-            #   streaming_encoding — encode frames in real time during collection instead of
-            #                        writing PNGs to disk and re-encoding at save time. This
-            #                        removes the disk round-trip and makes 's' near-instant.
-            #   encoder_threads    — threads per software encoder (ignored for NVENC).
             video_codec        = P('~video_codec',        ds.get('video_codec', 'h264_nvenc')),
             streaming_encoding = P('~streaming_encoding', col.get('streaming_encoding', True)),
             encoder_threads    = P('~encoder_threads',    col.get('encoder_threads', 4)),
@@ -162,6 +156,12 @@ class LeRobotCollectorNode:
             right_slave_topic          = P('~right_slave_arm_topic',      top.get('right_slave', 'right/slave_joint_states')),
             pc_top_topic               = P('~pc_top_topic',               top.get('pc_top', '/cam_top/cam_top/depth/color/points')),
         )
+
+        # ── Robot-type selection (dual / single arm) ─────────────────────
+        # Derive the active arm(s) from robot_type and adjust cameras + dims
+        # accordingly, so single-arm collection doesn't record the unused arm's
+        # wrist camera / joint state. MUST run before queue + dataset creation.
+        self._configure_robot_type()
 
         # ── Load Subtask Definitions from dataset config ─────────────────
         raw_subtasks = ds.get('subtasks', {})
@@ -187,19 +187,13 @@ class LeRobotCollectorNode:
         self._init_queues()
         # ── ROS Subscribers ──────────────────────────────────────────────
         self._init_subscribers()
-        # Frames are streamed straight into the LeRobot episode buffer during
-        # collection (see _append_frame), so video encoding overlaps with
-        # recording and 's' (save) only has to finalize the already-encoded
-        # episode instead of processing every frame in one burst.
         self.collecting = False
-        # Error-mode: when True, frames recorded during collection are flagged back_event=1
-        # (states from which the robot should trigger a System-2 replan). Toggled with 'e' while
-        # collecting; auto-reset on pause / save / discard / subtask-switch so it never leaks.
         self._error_mode = False
         self.current_subtask = self.subtasks[self._first_subtask_key]
         # ── LeRobot Dataset ──────────────────────────────────────────────
         self.dataset = None
         self._finalized = False
+        self._finalize_lock = threading.Lock()
         self._create_dataset()
         # ── Live Operator View (OpenCV) ───────────────────────────────
         self._view = None
@@ -244,6 +238,65 @@ class LeRobotCollectorNode:
             self._key_value = None
             return val
 
+    # ─────────────────────── Robot-Type Selection ────────────────────────
+    # robot_type → ordered list of active arms. The order fixes the layout of
+    # the concatenated state/action vectors (left first, then right).
+    _ROBOT_TYPE_ARMS = {
+        'dual_piper':        ['left', 'right'],
+        'single_piper_left': ['left'],
+        'single_piper_right': ['right'],
+    }
+    # Each arm's wrist camera. cam_top (and any other non-wrist cam) is shared
+    # and always kept regardless of which arm is active.
+    _ARM_WRIST_CAM = {'left': 'cam_left', 'right': 'cam_right'}
+
+    def _configure_robot_type(self):
+        """Resolve robot_type into active arms and adjust cameras + dims.
+
+        - Sets ``self.active_arms`` (ordered).
+        - Drops the inactive arm(s)' wrist camera from ``cfg.camera_names`` while
+          keeping cam_top / any shared camera.
+        - Overrides ``cfg.state_dim`` / ``cfg.action_dim`` to
+          ``len(active_arms) * num_joints_per_arm``.
+        """
+        cfg = self.cfg
+        rt = cfg.robot_type
+        if rt not in self._ROBOT_TYPE_ARMS:
+            valid = ', '.join(sorted(self._ROBOT_TYPE_ARMS))
+            raise ValueError(
+                f"Unknown robot_type '{rt}'. Valid options: {valid}."
+            )
+        self.active_arms = self._ROBOT_TYPE_ARMS[rt]
+
+        # ── Auto-filter cameras: drop inactive arms' wrist cameras ────────
+        inactive_wrist_cams = {
+            self._ARM_WRIST_CAM[arm]
+            for arm in self._ARM_WRIST_CAM
+            if arm not in self.active_arms
+        }
+        filtered = [c for c in cfg.camera_names if c not in inactive_wrist_cams]
+        if filtered != list(cfg.camera_names):
+            rospy.loginfo(
+                f'robot_type={rt}: cameras {list(cfg.camera_names)} → {filtered} '
+                f'(dropped {sorted(inactive_wrist_cams)})'
+            )
+        cfg.camera_names = filtered
+
+        # ── Auto-compute state/action dims from active arms ───────────────
+        derived_dim = len(self.active_arms) * cfg.num_joints_per_arm
+        if cfg.state_dim != derived_dim or cfg.action_dim != derived_dim:
+            rospy.logwarn(
+                f'robot_type={rt}: overriding state_dim/action_dim '
+                f'({cfg.state_dim}/{cfg.action_dim}) → {derived_dim} '
+                f'({len(self.active_arms)} arm(s) × {cfg.num_joints_per_arm} joints)'
+            )
+        cfg.state_dim = cfg.action_dim = derived_dim
+
+        rospy.loginfo(
+            f'robot_type={rt}: active_arms={self.active_arms}, '
+            f'cameras={cfg.camera_names}, state_dim={cfg.state_dim}'
+        )
+
     # ─────────────────────── Dataset Creation ────────────────────────────
     def _create_dataset(self):
         """Create a new LeRobotDataset or resume an existing one."""
@@ -278,8 +331,6 @@ class LeRobotCollectorNode:
                 )
                 # Initialize recording-related attributes that __init__ doesn't set
                 self.dataset.episode_buffer = self.dataset.create_episode_buffer()
-                # Streaming encoder feeds frames directly; the PNG image writer is
-                # only needed for non-video (image) features.
                 if not cfg.streaming_encoding:
                     self.dataset.start_image_writer(num_processes=0, num_threads=4)
                 rospy.loginfo(
@@ -482,14 +533,21 @@ class LeRobotCollectorNode:
         rospy.loginfo(f'Wrote {len(df)} subtasks to {parquet_path}')
 
     # ─────────────────────── Queue / Subscriber Init ─────────────────────
+    def _arm_state_keys(self):
+        """Ordered joint-state queue keys ('<arm>/master', '<arm>/slave') for
+        the active arm(s)."""
+        return [f'{arm}/{role}'
+                for arm in self.active_arms
+                for role in ('master', 'slave')]
+
     def _init_queues(self):
         cfg = self.cfg
         for cam in cfg.camera_names:
             self.queues[cam] = collections.deque(maxlen=5)
             if cfg.use_depth:
                 self.queues[f'{cam}_depth'] = collections.deque(maxlen=5)
-        for arm in ('left/master', 'left/slave', 'right/master', 'right/slave'):
-            self.queues[arm] = collections.deque(maxlen=50)
+        for key in self._arm_state_keys():
+            self.queues[key] = collections.deque(maxlen=50)
         if cfg.save_pointcloud:
             self.queues['pc_top'] = collections.deque(maxlen=10)
 
@@ -515,16 +573,16 @@ class LeRobotCollectorNode:
                 rospy.Subscriber(_cam_depth_topic_map[cam], Image,
                                  lambda msg, c=cam: self.queues[f'{c}_depth'].append(msg), queue_size=Q)
 
-        # Arm joint-state topics
+        # Arm joint-state topics (only the active arm(s))
         _arm_topic_map = {
             'left/master':  cfg.left_master_topic,
             'left/slave':   cfg.left_slave_topic,
             'right/master': cfg.right_master_topic,
             'right/slave':  cfg.right_slave_topic,
         }
-        for arm, topic in _arm_topic_map.items():
-            rospy.Subscriber(topic, JointState,
-                             lambda msg, a=arm: self.queues[a].append(msg), queue_size=Q)
+        for key in self._arm_state_keys():
+            rospy.Subscriber(_arm_topic_map[key], JointState,
+                             lambda msg, a=key: self.queues[a].append(msg), queue_size=Q)
 
         # Point cloud
         if cfg.save_pointcloud:
@@ -538,8 +596,7 @@ class LeRobotCollectorNode:
         Returns dict with 'images', 'depths', 'pointcloud', 'left/master', ... or None.
         """
         cfg = self.cfg
-        needed_keys = (list(cfg.camera_names)
-                       + ['left/master', 'left/slave', 'right/master', 'right/slave'])
+        needed_keys = list(cfg.camera_names) + self._arm_state_keys()
         if cfg.use_depth:
             needed_keys += [f'{c}_depth' for c in cfg.camera_names]
 
@@ -577,15 +634,15 @@ class LeRobotCollectorNode:
         if cfg.save_pointcloud and self.queues['pc_top']:
             pointcloud = sample_pointcloud(self.queues['pc_top'].popleft(), cfg.pc_target_points)
 
-        return {
+        frame = {
             'images': images,
             'depths': depths,
             'pointcloud': pointcloud,
-            'left/master':  self.queues['left/master'].popleft(),
-            'left/slave':   self.queues['left/slave'].popleft(),
-            'right/master': self.queues['right/master'].popleft(),
-            'right/slave':  self.queues['right/slave'].popleft(),
         }
+        # Pop joint states for the active arm(s) only
+        for key in self._arm_state_keys():
+            frame[key] = self.queues[key].popleft()
+        return frame
 
     # ─────────────────────── Collection Loop ─────────────────────────────
     def _collect(self):
@@ -601,7 +658,7 @@ class LeRobotCollectorNode:
         """
         cfg = self.cfg
         rate = rospy.Rate(cfg.fps)
-        count = self.dataset.episode_buffer['size']
+        count = self._buffered_frames()
         rospy.loginfo(f'▶ Collecting from frame {count} (max {cfg.max_timesteps})')
         rospy.loginfo(f'  Current subtask: {self.current_subtask}')
 
@@ -625,6 +682,14 @@ class LeRobotCollectorNode:
                 self._error_mode = False  # never leak error mode across a pause
                 self.collecting = False
                 pbar.close()
+                return
+            elif k == 'q':
+                # Quit while recording: stop collecting and request a clean
+                # shutdown. Teardown (view + finalize) runs on the main thread.
+                rospy.loginfo(f'⏹ Stop & exit requested at frame {count}')
+                self.collecting = False
+                pbar.close()
+                self._finalize_and_exit()
                 return
             elif k == 'e' and cfg.use_back_event:
                 self._error_mode = not self._error_mode
@@ -674,14 +739,14 @@ class LeRobotCollectorNode:
         all at once when the episode is saved.
         """
         cfg = self.cfg
-        ls = frame['left/slave']
-        rs = frame['right/slave']
-        lm = frame['left/master']
-        rm = frame['right/master']
+        njp = cfg.num_joints_per_arm
 
-        # Joint state vectors (7 DOF per arm)
-        qpos = np.concatenate([np.array(ls.position)[:7], np.array(rs.position)[:7]])
-        action = np.concatenate([np.array(lm.position)[:7], np.array(rm.position)[:7]])
+        # Joint state vectors: slave = observed state, master = teleop action.
+        # Concatenated over the active arm(s), njp DOF each (left before right).
+        qpos = np.concatenate(
+            [np.array(frame[f'{a}/slave'].position)[:njp] for a in self.active_arms])
+        action = np.concatenate(
+            [np.array(frame[f'{a}/master'].position)[:njp] for a in self.active_arms])
 
         lr_frame = {
             'observation.state': qpos.astype(np.float32),
@@ -728,7 +793,7 @@ class LeRobotCollectorNode:
           - subtask_index:  per-frame int64 index into meta/subtasks.parquet,
                    allowing fine-grained step tracking within an episode.
         """
-        n = self.dataset.episode_buffer['size']
+        n = self._buffered_frames()
         if n == 0:
             rospy.logwarn('Nothing to save — episode buffer is empty.')
             return
@@ -749,7 +814,14 @@ class LeRobotCollectorNode:
             f'✅ Episode {ep_idx} saved  |  total_episodes={self.dataset.meta.total_episodes}  '
             f'total_frames={self.dataset.meta.total_frames}'
         )
-        # save_episode() already resets the episode buffer; just reset the subtask + error mode.
+        # save_episode() normally resets the episode buffer, but it pops 'size'
+        # first and only recreates the buffer at the very end — guard against
+        # versions/paths that leave the buffer in a popped state so the next
+        # collection doesn't hit a KeyError.
+        buf = getattr(self.dataset, 'episode_buffer', None)
+        if not buf or 'size' not in buf:
+            self.dataset.episode_buffer = self.dataset.create_episode_buffer()
+        # Reset the subtask + error mode for the next episode.
         self.current_subtask = self.subtasks[self._first_subtask_key]
         self._error_mode = False
 
@@ -757,12 +829,17 @@ class LeRobotCollectorNode:
     def _key_poll_loop(self):
         """Start pynput listener and relay events to self._key."""
         listener = keyboard.Listener(on_press=_on_key_press)
+        # Daemon so the listener thread never keeps the process alive after exit.
+        listener.daemon = True
         listener.start()
-        while not rospy.is_shutdown():
-            try:
-                self._key = _key_queue.get(timeout=0.1)
-            except queue.Empty:
-                continue
+        try:
+            while not rospy.is_shutdown():
+                try:
+                    self._key = _key_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+        finally:
+            listener.stop()
 
     def _command_loop(self):
         """Main state-machine driven by keyboard commands."""
@@ -780,7 +857,7 @@ class LeRobotCollectorNode:
             elif k == 'r':
                 # Cancel the streaming encoder + drop partial video/images and
                 # reset the episode buffer (no-op if nothing buffered yet).
-                if self.dataset.episode_buffer['size'] > 0:
+                if self._buffered_frames() > 0:
                     self.dataset.clear_episode_buffer()
                 self.current_subtask = self.subtasks[self._first_subtask_key]
                 self._error_mode = False
@@ -797,14 +874,25 @@ class LeRobotCollectorNode:
             rospy.sleep(0.05)
 
     # ─────────────────────── Finalize ────────────────────────────────────
-    def _safe_finalize(self):
-        """Idempotent finalize — safe to call from multiple shutdown hooks."""
-        if self._finalized:
-            return
-        self._finalized = True
-        if self._view is not None:
-            self._view.stop()
+    def _teardown_view(self):
+        """Stop the live OpenCV view. MUST run on the main thread — driving the
+        cv2/Qt GUI from a background thread deadlocks (the same reason rendering
+        is pumped from spin()). Idempotent."""
+        view = self._view
+        if view is not None:
             self._view = None
+            try:
+                view.stop()
+            except Exception:
+                pass
+
+    def _safe_finalize(self):
+        """Idempotent dataset finalize — safe to call from any thread / shutdown
+        hook. Does NOT touch the cv2 view (see _teardown_view, main-thread only)."""
+        with self._finalize_lock:
+            if self._finalized:
+                return
+            self._finalized = True
         try:
             rospy.loginfo('📦 Finalizing dataset …')
             if self.dataset is not None:
@@ -817,13 +905,14 @@ class LeRobotCollectorNode:
             sys.stderr.write(f'[data_to_lerobot3] finalize error: {e}\n')
 
     def _signal_handler(self, signum, _frame):
-        """Handle SIGTERM/SIGINT for graceful shutdown."""
-        self._safe_finalize()
+        """Handle SIGTERM/SIGINT: request shutdown only. The heavy teardown
+        (view + dataset finalize) runs on the main thread via spin()/main()."""
         rospy.signal_shutdown(f'Received signal {signum}')
 
     def _finalize_and_exit(self):
-        """Stop image writers, close parquet writers, write final metadata."""
-        self._safe_finalize()
+        """Request a clean shutdown. View teardown + dataset finalize happen on
+        the main thread (spin()/main()) so the cv2 GUI is never driven from a
+        background thread."""
         rospy.signal_shutdown('User requested exit')
 
     # ─────────────────────── Usage Banner ────────────────────────────────
@@ -857,22 +946,29 @@ class LeRobotCollectorNode:
         command threads keep running independently. Falls back to plain
         rospy.spin() when the view is disabled/unavailable.
         """
-        if self._view is None or not self._view.enabled:
-            rospy.spin()
-            return
-        rate = rospy.Rate(15)  # GUI refresh rate
-        while not rospy.is_shutdown():
-            # While NOT collecting, keep the view live with the latest camera
-            # frames + current subtask so the operator can frame the scene and
-            # pick a subtask before pressing 'c'. During collection, _collect()
-            # already feeds the view with the synced frames it records, so we
-            # leave it alone to avoid overwriting the recording status.
-            if not self.collecting:
-                self._view.update(self._peek_latest_images(), self._build_idle_status())
-            if not self._view.render_once():  # user pressed q/ESC in the window
-                self._finalize_and_exit()
-                break
-            rate.sleep()
+        try:
+            if self._view is None or not self._view.enabled:
+                rospy.spin()
+                return
+            rate = rospy.Rate(15)  # GUI refresh rate
+            while not rospy.is_shutdown():
+                # While NOT collecting, keep the view live with the latest camera
+                # frames + current subtask so the operator can frame the scene and
+                # pick a subtask before pressing 'c'. During collection, _collect()
+                # already feeds the view with the synced frames it records, so we
+                # leave it alone to avoid overwriting the recording status.
+                if not self.collecting:
+                    self._view.update(self._peek_latest_images(), self._build_idle_status())
+                if not self._view.render_once():  # user pressed q/ESC in the window
+                    rospy.signal_shutdown('User pressed q/ESC in view')
+                    break
+                rate.sleep()
+        finally:
+            # Teardown on the MAIN thread: stop the cv2 view first (GUI calls are
+            # main-thread-only), then finalize the dataset. Runs no matter how the
+            # loop ends (q in view, q via keyboard, signal, max_timesteps).
+            self._teardown_view()
+            self._safe_finalize()
 
     # ─────────────────────── Live-View Helpers ───────────────────────────
     def _peek_latest_images(self):
@@ -892,9 +988,24 @@ class LeRobotCollectorNode:
                     pass
         return images
 
+    def _buffered_frames(self):
+        """Number of frames currently in the LeRobot episode buffer.
+
+        Read defensively: LeRobotDataset.save_episode() pops the 'size' key from
+        episode_buffer, and the buffer can be None before the first frame, so a
+        direct episode_buffer['size'] access can raise KeyError/TypeError between
+        episodes. Treat any missing/None buffer as 0 buffered frames.
+        """
+        if self.dataset is None:
+            return 0
+        buf = getattr(self.dataset, 'episode_buffer', None)
+        if not buf:
+            return 0
+        return buf.get('size', 0)
+
     def _build_idle_status(self):
         """Status overlay shown when not actively collecting (recording=False)."""
-        buffered = self.dataset.episode_buffer['size'] if self.dataset is not None else 0
+        buffered = self._buffered_frames()
         total_eps = self.dataset.meta.total_episodes if self.dataset is not None else 0
         total_frames = self.dataset.meta.total_frames if self.dataset is not None else 0
         return {

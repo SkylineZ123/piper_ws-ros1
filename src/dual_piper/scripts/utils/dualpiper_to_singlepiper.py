@@ -246,14 +246,14 @@ def convert(args):
 def _parse_args():
     p = argparse.ArgumentParser(description='Convert a dual-arm Piper LeRobot v3 dataset to single-arm.')
     p.add_argument('--src', type=str,
-                   default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/PickandPlaceTube_0614',
+                   default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/TubeSort_20260717',
                    help='Source dual-arm dataset root.')
     p.add_argument('--arm', type=str, required=True, choices=['left', 'right'],
                    help='Which arm to extract (the hyper-parameter).')
     p.add_argument('--out_dir', type=str,
                    default='/home/user/hdd_4t/data/data_lerobot3/piper',
                    help='Directory to write the single-arm dataset into.')
-    p.add_argument('--out_name', type=str, default=None,
+    p.add_argument('--out_name', type=str, default='TubeSort_20260718',
                    help='Output dataset folder name. Default: <src_name>_<arm>.')
     p.add_argument('--repo_id', type=str, default=None,
                    help='repo_id for the new dataset. Default: out_name.')
