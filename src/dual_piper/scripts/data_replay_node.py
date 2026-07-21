@@ -56,6 +56,42 @@ GRIPPER_SCALE = 1_000_000.0
 # Camera stitch order (left → right in the output frame)
 _STITCH_ORDER = ('cam_top', 'cam_left', 'cam_right')
 
+# robot_type → ordered list of active arms. Mirrors the collection node so the
+# state/action column layout (left arm first, then right) is interpreted the
+# same way it was written.
+_ROBOT_TYPE_ARMS = {
+    'dual_piper':         ['left', 'right'],
+    'single_piper_left':  ['left'],
+    'single_piper_right': ['right'],
+}
+
+
+def _resolve_arms(info: dict, action_dim: int):
+    """Determine which physical arm(s) an episode's action vector drives.
+
+    Prefers the authoritative ``robot_type`` recorded in meta/info.json; falls
+    back to inferring the arm count from the action width (assuming 7 DOF per
+    arm) when robot_type is missing/unknown.
+
+    Returns ``(arms, num_joints_per_arm)`` where *arms* is an ordered list of
+    'left'/'right'.
+    """
+    rt = info.get('robot_type')
+    if rt in _ROBOT_TYPE_ARMS:
+        arms = list(_ROBOT_TYPE_ARMS[rt])
+        njp = action_dim // len(arms)
+        _log(f'  robot_type     : {rt} → arms={arms}, {njp} DOF/arm')
+        return arms, njp
+
+    # Fallback: infer arm count from the action dimension (7 DOF per arm).
+    n = max(1, round(action_dim / 7))
+    arms = ['left', 'right'][:n]
+    njp = action_dim // n
+    _log(f"  robot_type '{rt}' unknown — inferred {n} arm(s) from action_dim="
+         f'{action_dim} → arms={arms} (assuming left first). Pass a correct '
+         f'robot_type in info.json if this is wrong.', 'warn')
+    return arms, njp
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Dataset helpers
@@ -248,9 +284,16 @@ def stitch_and_save_video(image_dict: dict, output_path: str, fps: float) -> Non
 #  Real-robot replay (optional)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def replay_on_robot(actions: np.ndarray, fps: float,
-                    can_left: str, can_right: str) -> None:
-    """Send action sequence to real Piper arms via the SDK."""
+def replay_on_robot(actions: np.ndarray, fps: float, arms: list,
+                    can_ports: dict, njp: int) -> None:
+    """Send an action sequence to the active Piper arm(s) via the SDK.
+
+    Only the arms in *arms* (derived from the dataset's robot_type) are
+    connected and driven. The action vector is split into ``njp``-DOF segments,
+    one per arm, in the same left→right order used during collection:
+        action[i*njp : (i+1)*njp]  →  arms[i]
+    Each segment is 6 joints + 1 gripper.
+    """
     try:
         from piper_sdk import C_PiperInterface
     except ImportError:
@@ -259,42 +302,42 @@ def replay_on_robot(actions: np.ndarray, fps: float,
 
     import time
 
-    _log(f'Connecting arms: can_left={can_left}  can_right={can_right}')
-    piper_left = C_PiperInterface(can_name=can_left)
-    piper_left.ConnectPort()
-    piper_right = C_PiperInterface(can_name=can_right)
-    piper_right.ConnectPort()
+    # Guard: the action width must match the resolved arm layout.
+    expected = len(arms) * njp
+    if actions.shape[1] != expected:
+        _log(f'Action width {actions.shape[1]} != arms×njp ({expected}). '
+             f'Refusing to replay — robot_type / dataset mismatch.', 'error')
+        return
 
-    piper_left.EnableArm(7)
-    piper_right.EnableArm(7)
+    # ── Connect only the active arm(s) ───────────────────────────────────
+    pipers = {}
+    for arm in arms:
+        port = can_ports[arm]
+        _log(f'Connecting {arm} arm on CAN port {port}')
+        p = C_PiperInterface(can_name=port)
+        p.ConnectPort()
+        p.EnableArm(7)
+        pipers[arm] = p
     time.sleep(1.0)
 
     # Move to zero first
-    for arm in (piper_left, piper_right):
-        arm.MotionCtrl_2(0x01, 0x01, 20)
-        arm.JointCtrl(0, 0, 0, 0, 0, 0)
+    for p in pipers.values():
+        p.MotionCtrl_2(0x01, 0x01, 20)
+        p.JointCtrl(0, 0, 0, 0, 0, 0)
     time.sleep(2.0)
 
     dt = 1.0 / fps
-    _log(f'Replaying {len(actions)} frames at {fps} Hz …')
-    piper_left.MotionCtrl_2(0x01, 0x01, 100,0xAD)
-    piper_right.MotionCtrl_2(0x01, 0x01, 100,0xAD)
+    _log(f'Replaying {len(actions)} frames at {fps} Hz on arm(s): {arms} …')
+    for p in pipers.values():
+        p.MotionCtrl_2(0x01, 0x01, 100, 0xAD)
+
     for action in tqdm(actions, desc='Replaying', ncols=80):
-        left_action = action[:7]
-        right_action = action[7:14]
-
-        left_joints = [int(v * RAD_TO_DEG_X1000) for v in left_action[:6]]
-        left_grip = int(abs(left_action[6] * GRIPPER_SCALE))
-
-        right_joints = [int(v * RAD_TO_DEG_X1000) for v in right_action[:6]]
-        right_grip = int(abs(right_action[6] * GRIPPER_SCALE))
-
-        piper_left.JointCtrl(*left_joints)
-        piper_left.GripperCtrl(left_grip, 1000, 0x01, 0)
-
-        piper_right.JointCtrl(*right_joints)
-        piper_right.GripperCtrl(right_grip, 1000, 0x01, 0)
-
+        for i, arm in enumerate(arms):
+            seg = action[i * njp:(i + 1) * njp]
+            joints = [int(v * RAD_TO_DEG_X1000) for v in seg[:6]]
+            grip = int(abs(seg[6] * GRIPPER_SCALE))
+            pipers[arm].JointCtrl(*joints)
+            pipers[arm].GripperCtrl(grip, 1000, 0x01, 0)
         time.sleep(dt)
 
     _log('Trajectory replay finished.')
@@ -308,9 +351,9 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description='Replay / visualize a LeRobot v3 dataset episode.')
     parser.add_argument('--dataset_dir', type=str,
-                        default='/home/user/hdd_4t/data/data_lerobot3/dualpiper/TubeSort_20260703',
+                        default='/home/user/hdd_4t/data/data_lerobot3/piper/TubeSort_20260720',
                         help='Root directory of the LeRobot v3 dataset.')
-    parser.add_argument('--episode_idx', type=int, default=1,
+    parser.add_argument('--episode_idx', type=int, default=130,
                         help='Episode index to replay / visualize.')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory for plots and videos. '
@@ -369,6 +412,9 @@ def main():
     qpos = np.stack(ep_df['observation.state'].values).astype(np.float32)
     action = np.stack(ep_df['action'].values).astype(np.float32)
 
+    # ── Auto-detect robot type → active arm(s) for replay ──────────────────
+    arms, njp = _resolve_arms(info, action.shape[1])
+
     if subtasks and 'subtask_index' in ep_df.columns:
         unique_st = ep_df['subtask_index'].dropna().unique()
         _log(f'  subtasks in episode: {[subtasks.get(int(i), i) for i in sorted(unique_st)]}')
@@ -392,7 +438,8 @@ def main():
 
     # ── Optional robot replay ──────────────────────────────────────────────
     if args.replay_on_robot:
-        replay_on_robot(action, fps, args.can_left, args.can_right)
+        can_ports = {'left': args.can_left, 'right': args.can_right}
+        replay_on_robot(action, fps, arms, can_ports, njp)
 
     _log(f'Done. Output dir: {output_dir}')
 

@@ -19,6 +19,7 @@ from .utils import (
     sample_and_expand_pointcloud,
     get_ros_stamp_sec,
     save_hdf5_data,
+    repair_dataset_consistency,
     # Classes
     KeyboardHandler,
 )

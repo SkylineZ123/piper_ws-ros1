@@ -35,7 +35,6 @@ import collections
 import time
 import types
 from pathlib import Path
-
 import yaml
 import numpy as np
 import pandas as pd
@@ -44,7 +43,8 @@ from tqdm import tqdm
 from pynput import keyboard
 from sensor_msgs.msg import Image, JointState, PointCloud2
 
-from utils import imgmsg_to_cv2, sample_pointcloud, StatusView
+from utils import (imgmsg_to_cv2, sample_pointcloud, StatusView,
+                   repair_dataset_consistency)
 
 # LeRobot v3.0
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -137,6 +137,9 @@ class LeRobotCollectorNode:
             video_codec        = P('~video_codec',        ds.get('video_codec', 'h264_nvenc')),
             streaming_encoding = P('~streaming_encoding', col.get('streaming_encoding', True)),
             encoder_threads    = P('~encoder_threads',    col.get('encoder_threads', 4)),
+            # Close the data parquet writer every N saved episodes so its footer
+            # reaches disk. Bounds how many episodes a hard kill can destroy.
+            data_flush_every   = P('~data_flush_every',   col.get('data_flush_every', 10)),
             # Live operator view (OpenCV window with camera feeds + status overlay)
             enable_view        = P('~enable_view',        col.get('enable_view', True)),
             # view_bgr=False: ROS/OpenCV images are already BGR — no conversion needed.
@@ -192,6 +195,7 @@ class LeRobotCollectorNode:
         self.current_subtask = self.subtasks[self._first_subtask_key]
         # ── LeRobot Dataset ──────────────────────────────────────────────
         self.dataset = None
+        self._episodes_since_flush = 0
         self._finalized = False
         self._finalize_lock = threading.Lock()
         self._create_dataset()
@@ -307,8 +311,10 @@ class LeRobotCollectorNode:
         if os.path.exists(target):
             if cfg.resume:
                 rospy.loginfo(f'Resuming existing dataset at {target}')
-                # Repair any corrupted parquet files left by a previous crash
-                self._repair_corrupted_parquets(target)
+                # Make the dataset self-consistent again after any previous crash.
+                # Must run BEFORE LeRobotDataset(): if data and metadata disagree it
+                # falls back to the HuggingFace Hub, which hangs for a local repo_id.
+                repair_dataset_consistency(target)
                 # Reuse the codec the dataset was originally created with so new
                 # episodes stay consistent with the existing video files. We can
                 # still enable streaming encoding (it works with any codec).
@@ -456,69 +462,6 @@ class LeRobotCollectorNode:
             if codec:
                 return codec_to_encoder.get(codec, codec)
         return default
-
-    @staticmethod
-    def _repair_corrupted_parquets(target_dir: str):
-        """Remove parquet files left without footer by a previous crash.
-
-        When the process is killed (e.g. ctrl+f2), the ParquetWriter may not
-        have written the footer bytes.  PyArrow cannot read such files and will
-        raise an ArrowInvalid error on the next load.  We detect and remove
-        them here so that the remaining *valid* data can still be resumed.
-        """
-        import pyarrow.parquet as pq
-
-        removed = []
-        for pq_path in Path(target_dir).rglob('*.parquet'):
-            try:
-                pq.read_metadata(pq_path)
-            except Exception:
-                removed.append(str(pq_path))
-                pq_path.unlink()
-
-        if removed:
-            rospy.logwarn(
-                f'Removed {len(removed)} corrupted parquet file(s) from '
-                f'previous crash:\n  ' + '\n  '.join(removed)
-            )
-
-            # Sync info.json counters with the surviving episode metadata,
-            # since the corrupted file may have contained the latest episodes.
-            info_path = os.path.join(target_dir, 'meta', 'info.json')
-            episodes_dir = Path(target_dir) / 'meta' / 'episodes'
-            if os.path.isfile(info_path) and episodes_dir.exists():
-                surviving = sorted(episodes_dir.rglob('*.parquet'))
-                if surviving:
-                    total_eps = 0
-                    total_frames = 0
-                    for ep_pq in surviving:
-                        tbl = pq.read_table(ep_pq)
-                        total_eps += len(tbl)
-                        if 'dataset_to_index' in tbl.column_names:
-                            col = tbl.column('dataset_to_index').to_pylist()
-                            if col:
-                                total_frames = max(total_frames, max(col))
-                    with open(info_path, 'r') as f:
-                        info = json.load(f)
-                    info['total_episodes'] = total_eps
-                    info['total_frames'] = total_frames
-                    info['splits'] = {'train': f'0:{total_eps}'}
-                    with open(info_path, 'w') as f:
-                        json.dump(info, f, indent=2)
-                    rospy.loginfo(
-                        f'Repaired info.json: total_episodes={total_eps}, '
-                        f'total_frames={total_frames}'
-                    )
-                else:
-                    # All episode metadata was corrupted — reset counters
-                    with open(info_path, 'r') as f:
-                        info = json.load(f)
-                    info['total_episodes'] = 0
-                    info['total_frames'] = 0
-                    info['splits'] = {'train': '0:0'}
-                    with open(info_path, 'w') as f:
-                        json.dump(info, f, indent=2)
-                    rospy.logwarn('All episode metadata lost — counters reset to 0.')
 
     def _write_subtasks_parquet(self):
         """Write subtask name → index mapping to meta/subtasks.parquet."""
@@ -808,6 +751,13 @@ class LeRobotCollectorNode:
         # are written after every save, not only every N episodes.
         # This also makes crash-resume reliable (no buffered-only episodes lost).
         self.dataset.meta._flush_metadata_buffer()
+        # Durability checkpoint. Episode DATA sits in an open ParquetWriter whose
+        # footer is only written on close(), while metadata is flushed every episode.
+        # A hard kill in between leaves metadata pointing at frames that never became
+        # readable — exactly the corruption repair_dataset_consistency() has to undo.
+        self._episodes_since_flush += 1
+        if self._episodes_since_flush >= self.cfg.data_flush_every:
+            self._checkpoint_data_writer()
 
         ep_idx = self.dataset.meta.total_episodes - 1
         rospy.loginfo(
@@ -824,6 +774,31 @@ class LeRobotCollectorNode:
         # Reset the subtask + error mode for the next episode.
         self.current_subtask = self.subtasks[self._first_subtask_key]
         self._error_mode = False
+
+    def _checkpoint_data_writer(self):
+        """Close the data parquet writer so its footer reaches disk.
+
+        LeRobot keeps one ParquetWriter open across episodes and only emits the
+        file footer on close(); until then the file is unreadable and a killed
+        process loses every episode in it. Closing here makes all episodes so far
+        durable.
+
+        ``_writer_closed_for_reading`` is set so the next episode rolls into a NEW
+        parquet file (see LeRobotDataset._save_episode_data): without it LeRobot
+        would reopen a ParquetWriter on the SAME path and truncate everything
+        already written there.
+        """
+        ds = self.dataset
+        if ds is None or getattr(ds, 'writer', None) is None:
+            return
+        try:
+            ds._close_writer()
+            ds._writer_closed_for_reading = True
+            self._episodes_since_flush = 0
+            rospy.loginfo('💾 Data checkpointed — parquet footer written, '
+                          'next episode starts a new file.')
+        except Exception as e:
+            rospy.logwarn(f'Could not checkpoint data writer: {e}')
 
     # ─────────────────────── Keyboard & Command Loop ─────────────────────
     def _key_poll_loop(self):
