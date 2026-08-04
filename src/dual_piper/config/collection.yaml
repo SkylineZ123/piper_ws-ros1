@@ -1,93 +1,35 @@
-# ═══════════════════════════════════════════════════════════════════════════
-# Dual-Piper Data Collection & Replay Configuration
-# ═══════════════════════════════════════════════════════════════════════════
-# Usage:
-#   Collection:  rosrun dual_piper data_to_lerobot3_node.py
-#                  _config_file:=/path/to/collection.yaml
-#   Replay:      rosrun dual_piper data_replay_node.py
-#                  --config config/collection.yaml
-# ═══════════════════════════════════════════════════════════════════════════
-# ── Dataset ───────────────────────────────────────────────────────────────
+# ============================================================
+# Piper 双臂遥操作数据采集配置 (lerobot v6)
+# 使用: rosrun dual_piper data_to_lerobot3_node.py
+#       可选指定配置文件: _config_file:=/path/to/collection.yaml
+# ============================================================
+
 dataset:
-  repo_id: "RoboMLT/BloodGasAnalysis"
-#  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/PickandPlaceTube_0614"
-  target_dir: "/home/user/hdd_4t/data/data_lerobot3/dualpiper/BloodGasAnalysis_20260626"
-  task_name: "blood gas sample analysis"
-  robot_type: "dual_piper"
+  # 数据集存储根目录 (v6 格式: data/ videos/ meta/)
+  target_dir: "/home/zhl/data/CubeTransfer_test"
+  # 数据集名称 (HF 风格 repo_id)
+  repo_id: "RoboMLT/CubeTransfer"
+  # 任务名称 (单一任务, 无子任务; 写入 meta/tasks.parquet)
+  task_name: "cube transfer"
+  # 采集帧率
   fps: 25
-  resume: false          # true = append to existingq dataset; false = fresh start
+  # false=新建数据集; true=追加到已有数据集 (resume 前自动修复一致性)
+  resume: false
+  # 视频编码器: h264_nvenc (NVIDIA GPU) / h264 (libx264) / libsvtav1 / auto
   video_codec: "h264_nvenc"
-  # Subtask definitions (key = keyboard shortcut, value = natural-language description).
-  # Only used when subtask.enabled = true.
-  subtasks:
-    '1': 'grasp the blood gas sample tube.'
-    '2': 'remove the sample tube cap.'
-    '3': 'discard the tube cap into the waste bin.'
-    '4': 'dock the blood gas sample tube to the blood gas analyzer.'
-    '5': 'withdraw the blood gas sample tube after testing is complete.'
-    '6': 'discard the tested blood sample into the waste bin.'
-    '7': 'return the robotic arm to the home position.'
-
-# ── Robot ─────────────────────────────────────────────────────────────────
-robot:
-  state_dim: 14         # 7 joints x 2 arms
-  action_dim: 14
-  num_joints_per_arm: 7 # 6 joints + 1 gripper
-
-# ── Collection ────────────────────────────────────────────────────────────
-collection:
-  max_timesteps: 10000   # max frames per episode before auto-pause
-  use_back_event: true
+  # 流式编码: 帧到达即编码, save_episode 时接近瞬时
   streaming_encoding: true
-  encoder_threads: 4     # threads per software encoder (ignored for NVENC)
-  # Live operator view: OpenCV window with tiled camera feeds + status overlay.
-  # Requires a display (set DISPLAY env var or use x11docker for headless machines).
-  enable_view: true      # set true to enable the live view
-  view_bgr: false         # false = images already BGR (imgmsg_to_cv2 returns BGR); true = RGB input
-  view_max_width: 1280    # max pixel width of the tiled camera strip
+  # 单集最大帧数, 达到后自动暂停
+  max_frames_per_episode: 10000
 
-# ── Camera ────────────────────────────────────────────────────────────────
+robot:
+  # dual_piper (14 自由度) | single_piper_left | single_piper_right (7 自由度)
+  robot_type: "dual_piper"
+
 camera:
-  names: ["cam_top", "cam_left", "cam_right"]
-  image_height: 480
-  image_width: 640
-  use_depth: false
-  use_videos: true      # true = MP4 video streams; false = individual images
-
-# ── Point Cloud ───────────────────────────────────────────────────────────
-pointcloud:
-  enabled: false
-  target_points: 10000
-
-# ── Subtask ───────────────────────────────────────────────────────────────
-subtask:
-  enabled: true   # set to false to disable per-frame subtask labelling
-
-# ── ROS Topics ────────────────────────────────────────────────────────────
-topics:
-  # RGB camera topics
-  img_top: "/cam_top/cam_top/color/image_raw"
-  img_left: "/cam_leftwrist/cam_leftwrist/color/image_raw"
-  img_right: "/cam_rightwrist/cam_rightwrist/color/image_raw"
-  # Depth camera topics (used only when camera.use_depth = true)
-  img_top_depth: "/cam_top/cam_top/aligned_depth_to_color/image_raw"
-  img_left_depth: "/cam_leftwrist/cam_leftwrist/aligned_depth_to_color/image_raw"
-  img_right_depth: "/cam_rightwrist/cam_rightwrist/aligned_depth_to_color/image_raw"
-  # Joint state topics
-  left_master: "left/master_joint_states"
-  left_slave: "left/slave_joint_states"
-  right_master: "right/master_joint_states"
-  right_slave: "right/slave_joint_states"
-  # Point cloud topic (used only when pointcloud.enabled = true)
-  pc_top: "/cam_top/cam_top/depth/color/points"
-
-# ── Replay ────────────────────────────────────────────────────────────────
-replay:
-  episode_idx: 0        # which episode to replay / visualize
-  replay_on_robot: false # send actions to physical arms
-  plot_joints: true     # save joint-position / action plots
-  stitch_video: true    # save stitched multi-camera video
-  video_fps: 30         # output video frame rate (should match dataset fps)
-  # CAN ports for real-robot replay
-  can_left: "can_left"
-  can_right: "can_right"
+  # 是否显示 OpenCV 实时预览窗口 (false 可提高帧率)
+  enable_view: true
+  # 相机序列号 (供 teleoperation.launch 使用)
+  serial_no_top: "327122074756"
+  serial_no_left: "148522072680"
+  serial_no_right: "241222073777"

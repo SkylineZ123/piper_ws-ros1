@@ -2,25 +2,21 @@
 <package format="2">
   <name>dual_piper</name>
   <version>1.0.0</version>
-  <description>
-    Dual-arm Piper robot teleoperation, data collection, and replay package.
-    Supports HDF5 and LeRobot v3 data formats.
-  </description>
-
-  <maintainer email="wd@todo.todo">wd</maintainer>
+  <description>Piper dual-arm teleoperation data collection (lerobot v6 dataset)</description>
+  <maintainer email="zhl@todo.todo">zhl</maintainer>
   <license>MIT</license>
-
-  <url type="repository">https://github.com/todo/dual_piper</url>
 
   <buildtool_depend>catkin</buildtool_depend>
 
-  <depend>rospy</depend>
-  <depend>std_msgs</depend>
-  <depend>sensor_msgs</depend>
-  <depend>geometry_msgs</depend>
-  <depend>piper_msgs</depend>
-  <depend>cv_bridge</depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>piper_msgs</build_depend>
 
-  <export>
-  </export>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>piper_msgs</exec_depend>
 </package>

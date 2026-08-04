@@ -17,4 +17,3 @@ bool communication_status_joint_3
 bool communication_status_joint_4
 bool communication_status_joint_5
 bool communication_status_joint_6
-

@@ -106,11 +106,13 @@ if [ "$EXPECTED_CAN_COUNT" -eq 1 ]; then
 fi
 
 # Pre-defined USB ports, target interface names, and their bitrates (used when multiple CAN modules)
-if [ "$EXPECTED_CAN_COUNT" -eq 2 ]; then
-    declare -A USB_PORTS 
-    USB_PORTS["1-6.4:1.0"]="can_left:1000000"
-    USB_PORTS["1-6.3:1.0"]="can_right:1000000"
-fi
+#if [ "$EXPECTED_CAN_COUNT" -eq 4 ]; then
+declare -A USB_PORTS
+USB_PORTS["1-6.4:1.0"]="can_left:1000000"
+USB_PORTS["1-6.3:1.0"]="can_right:1000000"
+#USB_PORTS["1-6.2:1.0"]="can_left_leader:1000000"
+#USB_PORTS["1-6.1:1.0"]="can_right_leader:1000000"
+#fi
 
 # Get the number of CAN modules in the current system
 CURRENT_CAN_COUNT=$(ip link show type can | grep -c "link/can")
