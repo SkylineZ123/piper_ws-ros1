@@ -1,0 +1,23 @@
+{
+  "source": "https://github.com/agilexrobotics/pika_ros",
+  "reference": "local reference install distribution, 2025-10-29",
+  "platform": "Ubuntu 20.04 x86_64 ROS Noetic",
+  "sha256": {
+    "bin/pika_single_locator_node": "6569e42b223c72ff7b70a3add7ba6c473c93a301ab057b3f200c8c63266873a1",
+    "bin/get_code": "a544d9a51f6c175a8182f8b04968ef27d4edf7889f7203595df23545d7fd9cea",
+    "bin/survive-cli": "e9fcf1b6917244bf676f6eb9203b525f67b6de2faae4b5605b89739961dba570",
+    "lib/libsurvive.so.0": "dfa6cf8624779e815e102086cf460ce55d05eff2381e4e023d733dcea5a18039",
+    "lib/plugins/poser_dummy.so": "7a1e8b7b608d0a88830a6803db2a598dd29054459700b4b0dc13d49dbf0e5750",
+    "lib/plugins/disambiguator_statebased.so": "eadeb7cfa2b27e56b57cc9953185d2c94e6aa4158fac08006231af58e27fd617",
+    "lib/plugins/driver_vive.so": "4c93acb6cb75da85824cdac44bf728bbfdea6a24f2a794d2fa66db1cef6affcc",
+    "lib/plugins/poser_barycentric_svd.so": "2f128b172514d91e2ef1bac5879559303d112863674fefc62afd864732273611",
+    "lib/plugins/driver_playback.so": "a2c5218b94301393a5e2ad6192604c91b699de048d40bedec49f1e156619c4e5",
+    "lib/plugins/driver_usbmon.so": "412a8bb934ded5d398032f6f7bcc3d4122e12958330869e900422e5fb388124a",
+    "lib/plugins/driver_global_scene_solver.so": "4428ea3341199717b0493948a749fda13f578313910d6f2e52132ec9dc833dd3",
+    "lib/plugins/poser_kalman_only.so": "04c6cfa4538ffdcbdc6e973824b9b150be8c8532b361d7ec749d3550b43cc194",
+    "lib/plugins/driver_udp.so": "de6daf6727b658845bbb6d963eda4d029ca166068ff518cb05e4e26d22692f97",
+    "lib/plugins/driver_dummy.so": "28b90f2b2cdd20a633615e0d9294f79345869ead95b5d2df35e72ac0bb42c533",
+    "lib/plugins/poser_mpfit.so": "0808595d87c07175f2d913aa05c0ab4abd1148e2492d387ea2b82ce33f1bb95e",
+    "lib/plugins/driver_simulator.so": "ab6a91736c1ea3b8c9b86495007ca3ab70295447b7c1397cf97dedef0f67c657"
+  }
+}

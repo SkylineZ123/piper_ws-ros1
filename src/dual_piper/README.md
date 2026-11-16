@@ -199,3 +199,7 @@ subtasks:
 ## License
 
 MIT — see `package.xml` for details.
+
+## Pika Sense 单臂管线
+
+Pika 相关代码已迁移到 `src/pika_piper`，不再由本包构建。旧 `pika_teleop.launch` 仅转发新包。遥操作、录制、导出与 replay 步骤见 [独立 pika_piper 包](../pika_piper/README.md)。

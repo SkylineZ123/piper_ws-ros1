@@ -1,0 +1,78 @@
+arm: left
+can_port: piper_left
+serial_port: /dev/ttyUSB0
+# Official locator quality limits, independent of Piper motion speed limits.
+dist_limit: 0.2
+angle_limit: 0.2
+linear_limit: 40.0
+angular_limit: 40.0
+# Piper firmware default speed percentage (1..100); applied in the CAN driver.
+# The software limits below still apply independently.
+motion_speed_percent: 100
+# Official JointCtrl high-follow output (0x151: MOVE J + is_mit_mode=0xAD).
+output_mode: mit_follow
+sdk_protocol: v3
+# Set speed only, preserve firmware angle limits, and verify all six readbacks
+# before allowing teleop/replay. SDK supports a configurable maximum <=3 rad/s.
+configure_firmware_joint_speed: true
+firmware_joint_speed_limit: 1.5
+# Control frequency in Hz. This is independent of dataset fps.
+control_hz: 50
+# Upstream full-pose IK + history/zero-reset seeds + 30 deg / 1 deg / 200 Hz interpolation.
+teleop_policy: official
+# Upstream per-axis 0.3 m position gate; angular errors are reported without rejection.
+pose_acceptance: official
+# Measured tracking indicators, independent of the deliberately loose IK gate.
+tracking_position_tolerance_m: 0.02
+tracking_orientation_tolerance_rad: 0.17453292519943295
+tracking_joint_error_rad: 0.15
+tracking_lag_grace_s: 0.25
+tracking_stall_speed_rad_s: 0.02
+tracking_stall_timeout_s: 0.75
+fps: 25
+source_timeout: 0.2
+# Software bounds for bounded-policy/replay/startup only. Official live output
+# uses upstream interpolation; the verified motor firmware speed still applies.
+max_joint_speed: 1.5
+# Teleoperation command acceleration, rad/s^2; strict replay retains its contract.
+max_joint_acceleration: 15.0
+max_gripper_speed: 0.4
+# Cartesian caps for the optional bounded policy (not official live IK).
+max_tcp_speed: 0.6
+max_tcp_angular_speed: 3.0
+# Pose tracking takes priority over the previous-command posture preference.
+ik_posture_weight: 0.0001
+# Work inside hardware bounds; states already in this margin can retreat.
+joint_limit_margin: 0.02
+# Shared retry budget (wall time checked between bounded IPOPT calls).
+teleop_ik_budget_ms: 16.0
+teleop_ik_max_attempts: 2
+# Confirmed on this arm via fresh 0x472/0x473 readback, 2026-11-16.
+# Re-query when changing arms/firmware; these are not universal Piper defaults.
+verified_joint_speed_limit: 1.5
+verified_feedback_limits_deg: [[-150, 150], [0, 180], [-170, 0], [-100, 100], [-70, 70], [-180, 180]]
+# Accommodate rounded URDF radians only inside verified hardware limits.
+# Commands, including the first recovery command, still use URDF bounds.
+feedback_tolerance_rad: 0.002
+# command time is accumulated first to respect speed and acceleration limits.
+near_zero_start_tolerance_deg: 0.5
+sense_gesture_control: true
+gesture_debounce: 0.4
+translation_scale: 1.0
+# These define a nominal tool frame; verify physically before enabling.
+tcp_xyzrpy: [0, 0, 0.1358, 0, 0, 0]
+pika_to_tcp_xyzrpy: [0, 0, 0, 0, 0, 0]
+# Map Sense/official tool axes to the stock Piper TCP axes. The official
+axis_rpy: [0, -1.5707963267948966, 0]
+task: pick and place
+output_dir: data/pika_sessions
+camera_tolerance: 0.020
+state_gap: 0.100
+command_age: 0.100
+cameras:
+  cam_top: /cam_top/cam_top/color/image_raw
+  cam_left: /cam_leftwrist/cam_leftwrist/color/image_raw
+camera_serials:
+  top: "327122074756"
+  wrist: "148522072680"
+gripper_input_max: 0.098

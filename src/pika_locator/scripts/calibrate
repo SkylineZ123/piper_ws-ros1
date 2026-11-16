@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+import sys
+from pika_locator_runtime import run_locator_binary
+
+if __name__ == '__main__':
+    sys.exit(run_locator_binary('survive-cli'))

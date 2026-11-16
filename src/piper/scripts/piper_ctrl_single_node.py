@@ -13,6 +13,8 @@ import time
 import threading
 import argparse
 import math
+import re
+import piper_sdk as piper_sdk_module
 from piper_sdk import *
 from piper_sdk import C_PiperInterface
 from std_srvs.srv import Trigger, TriggerResponse
@@ -23,8 +25,13 @@ from piper_msgs.srv import GoZero, GoZeroResponse
 from geometry_msgs.msg import Pose, PoseStamped
 # from tf.transformations import quaternion_from_euler  # 用于欧拉角到四元数的转换
 # 替换为（从tf2_ros导入转换函数）
-from tf2_ros.transformations import quaternion_from_euler
+from tf.transformations import quaternion_from_euler
 import numpy as np
+
+def validate_motion_speed_percent(value):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 100:
+        raise ValueError('motion_speed_percent must be an integer in [1, 100]')
+    return value
 
 def check_ros_master():
     try:
@@ -86,8 +93,28 @@ class C_PiperRosNode():
             rospy.logwarn("No gripper_val_mutiple param. Using default value of 1.")
             self.gripper_val_mutiple = 1  # 设置为默认值
         rospy.loginfo("%s is %s", rospy.resolve_name('~gripper_val_mutiple'), self.gripper_val_mutiple)
+        self.motion_speed_percent = validate_motion_speed_percent(
+            rospy.get_param('~motion_speed_percent', 50))
+        self.output_mode = rospy.get_param('~output_mode','position')
+        if self.output_mode not in ('position','mit_follow'):
+            raise ValueError('output_mode must be position or mit_follow')
+        self.sdk_protocol = rospy.get_param('~sdk_protocol','v2')
+        if self.sdk_protocol not in ('v2','v3'):
+            raise ValueError('sdk_protocol must be v2 or v3')
+        self.configure_firmware_speed = rospy.get_param('~configure_firmware_joint_speed',False)
+        if not isinstance(self.configure_firmware_speed,bool):
+            raise ValueError('configure_firmware_joint_speed must be boolean')
+        self.firmware_speed = rospy.get_param('~firmware_joint_speed_limit',.3)
+        if (isinstance(self.firmware_speed,bool) or not isinstance(self.firmware_speed,(int,float)) or
+                not np.isfinite(self.firmware_speed) or not 0 < self.firmware_speed <= 3.):
+            raise ValueError('firmware_joint_speed_limit must be in (0, 3] rad/s')
+        rospy.set_param('~motion_speed_percent', self.motion_speed_percent)
+        self._applied_motion_speed_percent = None
         # publish
         self.joint_pub = rospy.Publisher('joint_states_single', JointState, queue_size=1)
+        self.command_sent_pub = rospy.Publisher('command_sent', JointState, queue_size=10, tcp_nodelay=True)
+        self.fresh_feedback = rospy.get_param('~fresh_feedback', False)
+        self._last_feedback_stamp = None
         self.arm_status_pub = rospy.Publisher('arm_status', PiperStatusMsg, queue_size=1)
         # self.end_pose_euler_pub = rospy.Publisher('end_pose_euler', PosCmd, queue_size=1)
         self.end_pose_pub = rospy.Publisher('end_pose', PoseStamped, queue_size=1)
@@ -108,9 +135,15 @@ class C_PiperRosNode():
         self.joint_states.effort = [0.0] * 7
         
         # 创建piper类并打开can接口
-        self.piper = C_PiperInterface(can_name=self.can_port)
+        interface = (getattr(piper_sdk_module,'C_PiperInterface_V3',None)
+                     if self.sdk_protocol=='v3' else C_PiperInterface)
+        if interface is None:
+            raise RuntimeError('V3 firmware requires piper-sdk>=0.7.0a1 with C_PiperInterface_V3')
+        self.piper = interface(can_name=self.can_port)
         self.piper.ConnectPort()
-        self.piper.MotionCtrl_2(0x01, 0x01, 30,0)
+        self._configure_follow_output()
+        # Output mode is selected together with the first validated joint target,
+        # not while merely connecting/querying the bus.
         self.block_ctrl_flag = False
         # 启动订阅线程
         sub_pos_th = threading.Thread(target=self.SubPosThread)
@@ -124,6 +157,101 @@ class C_PiperRosNode():
         
         sub_joint_th.start()
         sub_enable_th.start()
+
+    def _get_motion_speed(self):
+        # Cached ROS parameter updates avoid polling the master at command Hz.
+        try:
+            return validate_motion_speed_percent(rospy.get_param_cached(
+                '~motion_speed_percent', self.motion_speed_percent))
+        except (ValueError, TypeError) as error:
+            rospy.logerr_throttle(1., str(error))
+            return None
+
+    def _read_motor_limit(self, joint, timeout=1.):
+        """Require a new response for this joint, not the SDK's stale cache."""
+        marker=self.piper.GetCurrentMotorAngleLimitMaxVel().time_stamp
+        self.piper.SearchMotorMaxAngleSpdAccLimit(joint,0x01)
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            wrapper=self.piper.GetCurrentMotorAngleLimitMaxVel()
+            value=wrapper.current_motor_angle_limit_max_vel
+            if wrapper.time_stamp>marker and value.motor_num==joint:
+                return {'joint':joint,'minimum_raw':int(value.min_angle_limit),
+                        'maximum_raw':int(value.max_angle_limit),'speed_raw':int(value.max_joint_spd)}
+            time.sleep(.005)
+        raise RuntimeError('Timed out reading firmware speed for joint%d'%joint)
+
+    def _configure_follow_output(self):
+        """Configure only speed, verify fresh replies, then permit acquisition."""
+        rospy.set_param('~applied_configuration',{'ready':False})
+        before=[]
+        changed=False
+        try:
+            firmware=None
+            if self.configure_firmware_speed or self.output_mode=='mit_follow':
+                deadline=time.monotonic()+2.
+                while time.monotonic()<deadline:
+                    firmware=self.piper.GetPiperFirmwareVersion()
+                    if isinstance(firmware,str) and re.match(r'S-V\d+\.\d+-\d+',firmware):break
+                    time.sleep(.01)
+                match=re.match(r'S-V(\d+)\.(\d+)-(\d+)',str(firmware))
+                if match is None:raise RuntimeError('Cannot verify firmware version before configuring follow mode')
+                version=tuple(map(int,match.groups()))
+                if version<(1,5,2):raise RuntimeError('High follow/speed-only configuration requires firmware >=1.5-2')
+                required='v3' if version>=(1,8,8) else 'v2'
+                if self.sdk_protocol!=required:
+                    raise RuntimeError('Firmware %s requires SDK %s interface'%(firmware,required))
+            after=[]
+            if self.configure_firmware_speed:
+                before=[self._read_motor_limit(i) for i in range(1,7)]
+                requested=round(self.firmware_speed*1000)
+                for row in before:
+                    if row['speed_raw']!=requested:
+                        changed=True
+                        # 0x7FFF preserves angle limits, supported >=1.5-2.
+                        self.piper.MotorMaxSpdSet(row['joint'],requested)
+                after=[self._read_motor_limit(i) for i in range(1,7)]
+                for old,new in zip(before,after):
+                    if (new['speed_raw']!=requested or new['minimum_raw']!=old['minimum_raw'] or
+                            new['maximum_raw']!=old['maximum_raw']):
+                        raise RuntimeError('Firmware speed readback/angle preservation failed for joint%d'%old['joint'])
+            report={'ready':True,'firmware':firmware or 'not_queried','sdk_protocol':self.sdk_protocol,
+                    'output_mode':self.output_mode,'mode_selection':'on_joint_command',
+                    'speed_percent_effective':self.output_mode=='position',
+                    'joint_speed_limits_rad_s':[row['speed_raw']/1000 for row in after],
+                    'limits_before':before,'limits_after':after,'stamp':time.time()}
+            rospy.set_param('~applied_configuration',report)
+        except Exception as error:
+            rollback=[]
+            if changed:
+                for row in before:
+                    try:
+                        self.piper.MotorMaxSpdSet(row['joint'],row['speed_raw'])
+                        reply=self._read_motor_limit(row['joint'])
+                        rollback.append(reply['speed_raw']==row['speed_raw'])
+                    except Exception:rollback.append(False)
+            rospy.set_param('~applied_configuration',{'ready':False,'reason':str(error),
+                                                     'rollback_verified':rollback})
+            raise
+
+    def _joint_mode(self,speed,legacy_percentage=False):
+        mode=getattr(self,'output_mode','position')
+        if mode=='mit_follow':
+            # Official high-follow JointCtrl path, not per-motor torque MIT.
+            self.piper.MotionCtrl_2(0x01,0x01,speed,0xAD)
+        elif legacy_percentage:
+            self.piper.MotionCtrl_2(0x01,0x01,speed)
+        else:
+            self.piper.MotionCtrl_2(0x01,0x01,speed,0)
+        if getattr(self,'_reported_output_mode',None)!=mode:
+            rospy.set_param('~applied_output_mode',mode)
+            self._reported_output_mode=mode
+
+    def _report_motion_speed(self, percent):
+        if self._applied_motion_speed_percent != percent:
+            self._applied_motion_speed_percent = percent
+            rospy.set_param('~applied_motion_speed_percent', percent)
+            rospy.loginfo('Piper firmware motion speed: %d%%', percent)
 
     def GetEnableFlag(self):
         return self.__enable_flag
@@ -198,14 +326,20 @@ class C_PiperRosNode():
         self.arm_status_pub.publish(arm_status)
         
     def PublishArmJointAndGripper(self):
+        joint_sample = self.piper.GetArmJointMsgs()
+        gripper_sample = self.piper.GetArmGripperMsgs()
+        source_stamp = min(joint_sample.time_stamp, gripper_sample.time_stamp)
+        if self.fresh_feedback and (source_stamp <= 0 or source_stamp == self._last_feedback_stamp):
+            return
+        self._last_feedback_stamp = source_stamp
         # 机械臂关节角和夹爪位置
         # 由于获取的原始数据是度为单位扩大了1000倍，因此要转为弧度需要先除以1000，再乘3.14/180，然后限制小数点位数为5位
-        joint_0:float = (self.piper.GetArmJointMsgs().joint_state.joint_1/1000) * 0.017444
-        joint_1:float = (self.piper.GetArmJointMsgs().joint_state.joint_2/1000) * 0.017444
-        joint_2:float = (self.piper.GetArmJointMsgs().joint_state.joint_3/1000) * 0.017444
-        joint_3:float = (self.piper.GetArmJointMsgs().joint_state.joint_4/1000) * 0.017444
-        joint_4:float = (self.piper.GetArmJointMsgs().joint_state.joint_5/1000) * 0.017444
-        joint_5:float = (self.piper.GetArmJointMsgs().joint_state.joint_6/1000) * 0.017444
+        joint_0:float = (self.piper.GetArmJointMsgs().joint_state.joint_1/1000) * (math.pi / 180.0)
+        joint_1:float = (self.piper.GetArmJointMsgs().joint_state.joint_2/1000) * (math.pi / 180.0)
+        joint_2:float = (self.piper.GetArmJointMsgs().joint_state.joint_3/1000) * (math.pi / 180.0)
+        joint_3:float = (self.piper.GetArmJointMsgs().joint_state.joint_4/1000) * (math.pi / 180.0)
+        joint_4:float = (self.piper.GetArmJointMsgs().joint_state.joint_5/1000) * (math.pi / 180.0)
+        joint_5:float = (self.piper.GetArmJointMsgs().joint_state.joint_6/1000) * (math.pi / 180.0)
         joint_6:float = self.piper.GetArmGripperMsgs().gripper_state.grippers_angle/1000000
         vel_0:float = self.piper.GetArmHighSpdInfoMsgs().motor_1.motor_speed/1000
         vel_1:float = self.piper.GetArmHighSpdInfoMsgs().motor_2.motor_speed/1000
@@ -220,7 +354,7 @@ class C_PiperRosNode():
         effort_4:float = self.piper.GetArmHighSpdInfoMsgs().motor_5.effort/1000
         effort_5:float = self.piper.GetArmHighSpdInfoMsgs().motor_6.effort/1000
         effort_6:float = self.piper.GetArmGripperMsgs().gripper_state.grippers_effort/1000
-        self.joint_states.header.stamp = rospy.Time.now()
+        self.joint_states.header.stamp = rospy.Time.from_sec(source_stamp) if self.fresh_feedback else rospy.Time.now()
         self.joint_states.position = [joint_0,joint_1, joint_2, joint_3, joint_4, joint_5,joint_6]
         self.joint_states.velocity = [vel_0, vel_1, vel_2, vel_3, vel_4, vel_5, 0.0]
         self.joint_states.effort = [effort_0, effort_1, effort_2, effort_3, effort_4, effort_5, effort_6]
@@ -296,6 +430,9 @@ class C_PiperRosNode():
         # rospy.loginfo("gripper: %f", pos_data.gripper)
         # rospy.loginfo("mode1: %d", pos_data.mode1)
         # rospy.loginfo("mode2: %d", pos_data.mode2)
+        if getattr(self,'output_mode','position')=='mit_follow':
+            rospy.logerr_throttle(1.,'MIT follow accepts joint targets; Cartesian SDK commands would reset the selected mode')
+            return
         if not self.block_ctrl_flag:
             factor = 180 / 3.1415926
             x = round(pos_data.x*1000) * 1000
@@ -315,8 +452,12 @@ class C_PiperRosNode():
             rospy.loginfo("mode1: %d", pos_data.mode1)
             rospy.loginfo("mode2: %d", pos_data.mode2)
             if(self.GetEnableFlag()):
+                speed = self._get_motion_speed()
+                if speed is None:
+                    return
                 self.piper.MotionCtrl_1(0x00, 0x00, 0x00)
-                self.piper.MotionCtrl_2(0x01, 0x00, 50)
+                self.piper.MotionCtrl_2(0x01, 0x00, speed)
+                self._report_motion_speed(speed)
                 self.piper.EndPoseCtrl(x, y, z, 
                                         rx, ry, rz)
                 gripper = round(pos_data.gripper*1000*1000)
@@ -324,7 +465,7 @@ class C_PiperRosNode():
                 if(pos_data.gripper<0): gripper = 0
                 if(self.gripper_exist):
                     self.piper.GripperCtrl(abs(gripper), 1000, 0x01, 0)
-                self.piper.MotionCtrl_2(0x01, 0x00, 50)
+                self.piper.MotionCtrl_2(0x01, 0x00, speed)
     
     def joint_callback(self, joint_data):
         """机械臂关节角回调函数
@@ -332,6 +473,8 @@ class C_PiperRosNode():
         Args:
             joint_data (): 
         """
+        if len(joint_data.position) < 6 or not np.isfinite(joint_data.position).all():
+            return
         if not self.block_ctrl_flag:
             factor = 57324.840764 #1000*180/3.14
             factor = 1000 * 180 / np.pi
@@ -357,6 +500,9 @@ class C_PiperRosNode():
                 if(joint_6<0): joint_6 = 0
             else: joint_6 = None
             if(self.GetEnableFlag()):
+                speed = self._get_motion_speed()
+                if speed is None:
+                    return
                 # 设定电机速度
                 if(joint_data.velocity != []):
                     all_zeros = all(v == 0 for v in joint_data.velocity)
@@ -368,9 +514,11 @@ class C_PiperRosNode():
                         if (vel_all > 100): vel_all = 100
                         if (vel_all < 0): vel_all = 0
                         rospy.loginfo("vel_all: %d", vel_all)
-                        self.piper.MotionCtrl_2(0x01, 0x01, vel_all)
-                    else: self.piper.MotionCtrl_2(0x01, 0x01, 50,0)
-                else: self.piper.MotionCtrl_2(0x01, 0x01, 50,0)
+                        speed = vel_all
+                        self._joint_mode(speed,legacy_percentage=True)
+                    else: self._joint_mode(speed)
+                else: self._joint_mode(speed)
+                self._report_motion_speed(speed)
                 
                 # 给定关节角位置
                 self.piper.JointCtrl(joint_0, joint_1, joint_2, 
@@ -388,6 +536,12 @@ class C_PiperRosNode():
                     # 默认1N
                     else: self.piper.GripperCtrl(abs(joint_6), 1000, 0x01, 0)
     
+                sent = JointState()
+                sent.header = joint_data.header
+                sent.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6', 'gripper']
+                sent.position = [v / factor for v in (joint_0, joint_1, joint_2, joint_3, joint_4, joint_5)] + [joint_6 / 1e6 if joint_6 is not None else self.joint_states.position[6]]
+                self.command_sent_pub.publish(sent)
+
     def enable_callback(self, enable_flag:Bool):
         """机械臂使能回调函数
 

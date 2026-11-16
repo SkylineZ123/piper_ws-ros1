@@ -1,0 +1,6 @@
+<launch>
+  <arg name="duration" default="10"/>
+  <arg name="output" default="/tmp/pika_timing.json"/>
+  <node pkg="pika_piper" type="measure_teleop.py" name="pika_timing_probe" output="screen"
+        args="--duration $(arg duration) --output '$(arg output)'"/>
+</launch>

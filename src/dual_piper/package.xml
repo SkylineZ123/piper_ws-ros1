@@ -15,6 +15,8 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <depend>rospy</depend>
+  <!-- Compatibility launch files forward to the independent Pika package. -->
+  <exec_depend>pika_piper</exec_depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>

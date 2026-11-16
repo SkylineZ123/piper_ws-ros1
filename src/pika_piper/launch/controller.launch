@@ -1,0 +1,27 @@
+<launch>
+  <arg name="config" default="$(find pika_piper)/config/pipeline.yaml"/>
+  <arg name="control_python" default="$(optenv PIKA_CONTROL_PYTHON /usr/bin/python3)"/>
+  <arg name="control_hz" default=""/>
+  <arg name="max_tcp_speed" default=""/>
+  <arg name="max_tcp_angular_speed" default=""/>
+  <arg name="max_joint_speed" default=""/>
+  <arg name="max_gripper_speed" default=""/>
+  <arg name="translation_scale" default=""/>
+  <!-- Private parameters override YAML; names/services keep /pika_piper. -->
+  <group ns="pika_piper">
+    <node pkg="pika_piper" type="control_node.py" name="controller" launch-prefix="$(arg control_python)" output="screen" required="true" clear_params="true">
+      <env name="LD_LIBRARY_PATH" value="$(eval arg('control_python').rsplit('/', 1)[0] + '/../lib:' + optenv('LD_LIBRARY_PATH', ''))"/>
+      <env name="PYTHONNOUSERSITE" value="1"/>
+      <env name="OMP_NUM_THREADS" value="1"/>
+      <env name="OPENBLAS_NUM_THREADS" value="1"/>
+      <env name="MKL_NUM_THREADS" value="1"/>
+      <param name="config" value="$(arg config)"/>
+      <param name="control_hz" type="double" value="$(arg control_hz)" if="$(eval arg('control_hz') != '')"/>
+      <param name="max_tcp_speed" type="double" value="$(arg max_tcp_speed)" if="$(eval arg('max_tcp_speed') != '')"/>
+      <param name="max_tcp_angular_speed" type="double" value="$(arg max_tcp_angular_speed)" if="$(eval arg('max_tcp_angular_speed') != '')"/>
+      <param name="max_joint_speed" type="double" value="$(arg max_joint_speed)" if="$(eval arg('max_joint_speed') != '')"/>
+      <param name="max_gripper_speed" type="double" value="$(arg max_gripper_speed)" if="$(eval arg('max_gripper_speed') != '')"/>
+      <param name="translation_scale" type="double" value="$(arg translation_scale)" if="$(eval arg('translation_scale') != '')"/>
+    </node>
+  </group>
+</launch>

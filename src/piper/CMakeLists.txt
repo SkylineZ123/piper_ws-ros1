@@ -18,6 +18,9 @@ find_package(catkin REQUIRED COMPONENTS
   trajectory_msgs
   message_generation
   geometry_msgs
+  piper_msgs
+  std_srvs
+  tf
 )
 
 ## System dependencies are found with CMake's conventions
@@ -119,7 +122,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES piper
- CATKIN_DEPENDS actionlib actionlib_msgs control_msgs roscpp rospy sensor_msgs std_msgs trajectory_msgs message_generation geometry_msgs
+ CATKIN_DEPENDS actionlib actionlib_msgs control_msgs roscpp rospy sensor_msgs std_msgs trajectory_msgs message_generation geometry_msgs piper_msgs std_srvs tf
 #  DEPENDS system_lib
 )
 
@@ -172,6 +175,9 @@ include
 # See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
 
 ## Mark executable scripts (Python etc.) for installation
+catkin_install_python(PROGRAMS scripts/piper_ctrl_single_node.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(DIRECTORY launch/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
 ## in contrast to setup.py, you can choose the destination
 # catkin_install_python(PROGRAMS
 #   scripts/my_python_script

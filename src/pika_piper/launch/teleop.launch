@@ -1,0 +1,40 @@
+<launch>
+  <arg name="config" default="$(find pika_piper)/config/pipeline.yaml"/>
+  <arg name="control_python" default="$(optenv PIKA_CONTROL_PYTHON /home/zzq/.conda/envs/pika-bringup/bin/python3)"/>
+  <arg name="control_hz" default=""/>
+  <arg name="max_tcp_speed" default=""/>
+  <arg name="max_tcp_angular_speed" default=""/>
+  <arg name="max_joint_speed" default=""/>
+  <arg name="max_gripper_speed" default=""/>
+  <arg name="translation_scale" default=""/>
+  <arg name="motion_speed_percent" default=""/>
+  <arg name="auto_enable" default="true"/>
+  <arg name="start_cameras" default="false"/>
+  <arg name="top_serial" default="327122074756"/>
+  <arg name="wrist_serial" default="148522072680"/>
+  <arg name="wrist_namespace" default="cam_leftwrist"/>
+  <include file="$(find pika_piper)/launch/sense.launch">
+    <arg name="config" value="$(arg config)"/>
+  </include>
+  <include file="$(find pika_piper)/launch/driver.launch">
+    <arg name="config" value="$(arg config)"/>
+    <arg name="control_python" value="$(arg control_python)"/>
+    <arg name="auto_enable" value="$(arg auto_enable)"/>
+    <arg name="motion_speed_percent" value="$(arg motion_speed_percent)"/>
+  </include>
+  <include file="$(find pika_piper)/launch/controller.launch">
+    <arg name="config" value="$(arg config)"/>
+    <arg name="control_python" value="$(arg control_python)"/>
+    <arg name="control_hz" value="$(arg control_hz)"/>
+    <arg name="max_tcp_speed" value="$(arg max_tcp_speed)"/>
+    <arg name="max_tcp_angular_speed" value="$(arg max_tcp_angular_speed)"/>
+    <arg name="max_joint_speed" value="$(arg max_joint_speed)"/>
+    <arg name="max_gripper_speed" value="$(arg max_gripper_speed)"/>
+    <arg name="translation_scale" value="$(arg translation_scale)"/>
+  </include>
+  <include file="$(find pika_piper)/launch/cameras.launch" if="$(arg start_cameras)">
+    <arg name="top_serial" value="$(arg top_serial)"/>
+    <arg name="wrist_serial" value="$(arg wrist_serial)"/>
+    <arg name="wrist_namespace" value="$(arg wrist_namespace)"/>
+  </include>
+</launch>

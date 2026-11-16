@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(pika_locator)
+find_package(catkin REQUIRED COMPONENTS roscpp tf data_msgs)
+catkin_python_setup()
+catkin_package()
+catkin_install_python(PROGRAMS scripts/pika_single_locator_node scripts/calibrate scripts/get_code DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(DIRECTORY runtime/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/runtime USE_SOURCE_PERMISSIONS)
+install(FILES PROVENANCE.json LICENSE.pika_ros LICENSE.libsurvive DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

@@ -1,0 +1,6 @@
+<launch>
+<arg name="wrist_namespace" default="cam_leftwrist"/>
+<arg name="top_serial"/><arg name="wrist_serial"/>
+<!-- <group ns="cam_top"><include file="$(find realsense2_camera)/launch/rs_camera.launch"><arg name="camera" value="cam_top"/><arg name="serial_no" value="$(arg top_serial)"/><arg name="enable_depth" value="false"/><arg name="enable_color" value="true"/><arg name="enable_infra1" value="false"/><arg name="enable_infra2" value="false"/><arg name="color_width" value="640"/><arg name="color_height" value="480"/><arg name="color_fps" value="30"/></include></group> -->
+<!-- <group ns="$(arg wrist_namespace)"><include file="$(find realsense2_camera)/launch/rs_camera.launch"><arg name="camera" value="$(arg wrist_namespace)"/><arg name="serial_no" value="$(arg wrist_serial)"/><arg name="enable_depth" value="false"/><arg name="enable_color" value="true"/><arg name="enable_infra1" value="false"/><arg name="enable_infra2" value="false"/><arg name="color_width" value="640"/><arg name="color_height" value="480"/><arg name="color_fps" value="30"/></include></group> -->
+</launch>

@@ -1,0 +1,14 @@
+<launch>
+  <arg name="config" default="$(find pika_piper)/config/pipeline.yaml"/>
+  <node pkg="pika_piper" type="pika_serial" name="pika_serial" output="screen" required="true">
+    <rosparam command="load" file="$(arg config)"/>
+    <!-- New gesture events are independent of legacy capture services. -->
+    <param name="enable_gesture_control" value="false"/>
+    <remap from="/localization_status" to="/pika_localization_status"/>
+  </node>
+  <node pkg="pika_locator" type="pika_single_locator_node" name="pika_single_locator" output="screen" required="true">
+    <!-- All four quality limits are supplied by pipeline.yaml. Explicit param
+         tags would override rosparam-loaded YAML even if placed before it. -->
+    <rosparam command="load" file="$(arg config)"/>
+  </node>
+</launch>
