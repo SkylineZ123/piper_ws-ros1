@@ -473,9 +473,13 @@ class Controller:
                 'joint_limited': bool(self.joint_limited),
                 'tracking': self.tracking,
                 'teleop_policy': getattr(self.teleop_solver, 'policy', 'bounded'),
-                'command_publication_policy': 'official_30deg_1deg_200hz'
-                if getattr(self.teleop_solver, 'policy', None) == 'official'
-                else 'bounded_joint_step',
+                'command_publication_policy': (
+                    'replay_direct_targets'
+                    if self.mode == 'replay'
+                    else 'official_30deg_1deg_200hz'
+                    if getattr(self.teleop_solver, 'policy', None) == 'official'
+                    else 'bounded_joint_step'
+                ),
                 'command_feedback_error_rad': float(
                     np.max(np.abs(self.sent[:6] - self.feedback[:6]))
                 )
@@ -486,6 +490,7 @@ class Controller:
                 },
                 'effective_joint_speed_rad_s': effective_joint_speed(self.cfg)
                 if 'max_joint_speed' in self.cfg
+                and self.mode != 'replay'
                 and not (
                     self.mode == 'teleop'
                     and getattr(self.teleop_solver, 'policy', None) == 'official'
@@ -620,12 +625,21 @@ class Controller:
             self.k.validate_feedback(self.sent, 'previous command')
         self.k.validate_configuration(q, 'command target')
         target = np.asarray(q)
-        speed = effective_joint_speed(self.cfg)
         if official:
             self.teleop_solver._validate_path(self.sent, target)
             q = target.copy()
+        elif self.mode == 'replay':
+            # Replay preserves target values and source timing. The worker
+            # generates a smooth first-frame approach before recorded playback.
+            q = target.copy()
         else:
-            q = limit_step(self.sent, target, dt, speed, self.cfg['max_gripper_speed'])
+            q = limit_step(
+                self.sent,
+                target,
+                dt,
+                effective_joint_speed(self.cfg),
+                self.cfg['max_gripper_speed'],
+            )
         self.joint_limited = bool(np.any(np.abs(target - q) > 1e-9))
         self.k.validate_configuration(q, 'limited command')
         msg = JointState()

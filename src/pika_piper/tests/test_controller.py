@@ -98,6 +98,38 @@ def test_effective_limits_and_joint_clipping_are_visible(controller):
     assert states[-1]['motion_limits']['max_joint_speed']==.5
     assert states[-1]['motion_limits']['control_hz']==50
 
+
+@pytest.mark.parametrize('kind', ['joint', 'eef6d'])
+def test_replay_publishes_full_targets_without_speed_clipping(controller, kind):
+    import json
+    c=controller;c.cfg.update(max_joint_speed=.5,max_gripper_speed=.04)
+    writes=[];states=[]
+    c.cmd=types.SimpleNamespace(publish=lambda msg:writes.append(np.array(msg.position)))
+    c.state=types.SimpleNamespace(publish=lambda msg:states.append(json.loads(msg.data)))
+    target=np.r_[np.full(6,.2),.04]
+    c.k.ik=lambda *args:target.copy()
+    assert c.set_replay(types.SimpleNamespace(data=True)).success
+    c.replay=(kind,target.copy());c.last_tick=time.monotonic()-.02
+    c.tick(None)
+    assert c.mode=='replay'
+    np.testing.assert_array_equal(writes[-1],target)
+    assert states[-1]['joint_limited'] is False
+    assert states[-1]['effective_joint_speed_rad_s'] is None
+    assert states[-1]['command_publication_policy']=='replay_direct_targets'
+
+
+def test_replay_keeps_target_validation_before_publication(controller):
+    c=controller;c.cfg.update(max_joint_speed=.5,max_gripper_speed=.04)
+    writes=[];c.cmd=types.SimpleNamespace(publish=writes.append)
+    assert c.set_replay(types.SimpleNamespace(data=True)).success
+    def reject(q,context):
+        if context=='command target':raise ValueError('target self-collision')
+    c.k.validate_configuration=reject
+    c.replay=('joint',np.r_[np.full(6,.2),.04])
+    c.tick(None)
+    assert c.mode=='fault' and 'self-collision' in c.reason
+    assert not writes
+
 def test_tracking_timeout_latches_fault(controller):
     c=controller;c.mode='teleop';c.hand_at=0
     c.tick(None)

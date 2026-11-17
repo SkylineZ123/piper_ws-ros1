@@ -55,6 +55,7 @@ def episode_arrays(table, episode, start_frame=0, end_frame=None, segment_id=Non
     for key in (
         'action',
         'observation.state',
+        'observation.joint_state',
         'observation.eef_state',
         'joint_command',
         'eef_command',
@@ -71,6 +72,7 @@ def episode_arrays(table, episode, start_frame=0, end_frame=None, segment_id=Non
         if key in (
             'action',
             'observation.state',
+            'observation.joint_state',
             'observation.eef_state',
             'joint_command',
             'eef_command',
@@ -121,30 +123,6 @@ def replay_span(arrays, fps):
     return arrays['action'], arrays.get('source_timestamp', arrays['timestamp'])
 
 
-def speed_limit_from_peak(peak, joint_speed, gripper_speed):
-    """Largest <=1 time scale that avoids changing targets via speed clipping."""
-    return float(
-        min(
-            1.0,
-            joint_speed / max(float(np.max(peak[:6])), 1e-12),
-            gripper_speed / max(float(peak[6]), 1e-12),
-        )
-    )
-
-
-def check_physical_speed(joints, stamps, speed, joint_speed, gripper_speed):
-    peak = np.max(
-        abs(np.diff(np.asarray(joints, dtype=float), axis=0) / np.diff(stamps)[:, None]), axis=0
-    )
-    limit = speed_limit_from_peak(peak, joint_speed, gripper_speed)
-    if speed > limit + 1e-6:
-        raise ValueError(
-            'Replay would be clipped by controller speed limits; '
-            'set speed <= %.6f (current %.4f)' % (limit, speed)
-        )
-    return limit
-
-
 def error_statistics(command, state, eef=False):
     error = np.asarray(command) - np.asarray(state)
     if eef:
@@ -166,6 +144,7 @@ def quality_report(arrays, meta, fps):
         duration_s=count / fps,
         fps=fps,
         action_type=meta['action_type'],
+        state_type=meta.get('state_type', 'joint'),
         source_duration_s=float(source[-1] - source[0]),
         segment_ids=[int(v) for v in dict.fromkeys(segments.tolist())],
         continuous_spans=[
@@ -191,10 +170,11 @@ def quality_report(arrays, meta, fps):
         )
         report['source_gaps'] = int(np.count_nonzero(source_dt > 1.5 / fps))
         report['source_clock_reversals'] = int(np.count_nonzero(source_dt <= 0))
-    if 'joint_command' in arrays:
-        report['joint_tracking'] = error_statistics(
-            arrays['joint_command'], arrays['observation.state']
-        )
+    joint_state = (
+        'observation.joint_state' if meta.get('state_type') == 'eef6d' else 'observation.state'
+    )
+    if 'joint_command' in arrays and joint_state in arrays:
+        report['joint_tracking'] = error_statistics(arrays['joint_command'], arrays[joint_state])
     if 'eef_command' in arrays and 'observation.eef_state' in arrays:
         report['eef_tracking'] = error_statistics(
             arrays['eef_command'], arrays['observation.eef_state'], eef=True
@@ -234,15 +214,9 @@ def quality_report(arrays, meta, fps):
             for a, b in spans
             if b - a > 1
         ]
-        config = meta.get('config', {})
-        if joint_velocities and 'max_joint_speed' in config and 'max_gripper_speed' in config:
-            from .core import effective_joint_speed
-
+        if joint_velocities:
             peak = np.max(np.concatenate(joint_velocities), axis=0)
             report['joint_command_peak_speed'] = peak.tolist()
-            report['suggested_max_replay_speed'] = speed_limit_from_peak(
-                peak, effective_joint_speed(config), config['max_gripper_speed']
-            )
     return report
 
 

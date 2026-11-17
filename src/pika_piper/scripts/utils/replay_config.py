@@ -116,8 +116,6 @@ def load_options(argv=None):
         or speed <= 0
     ):
         raise ValueError('speed must be finite and positive')
-    if options['execute'] and speed > 1:
-        raise ValueError('Physical replay speed must be in (0, 1]')
     for key in ('start_frame', 'end_frame', 'segment_id'):
         value = options[key]
         if value is not None and (

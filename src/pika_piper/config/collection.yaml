@@ -1,6 +1,6 @@
 # Run record_session.py with your Python 3.12 environment. The writer uses
 # that same interpreter (sys.executable); no separate Python path is needed.
-repo_id: local/pika_piper
+repo_id: pika_piper/pick_and_place_tube
 output_dir: ../../../data/pika_lerobot  # relative to this YAML; --output overrides
 action_type: joint              # joint or eef6d (xyz + RPY + gripper)
 max_timesteps: 5000
@@ -16,7 +16,7 @@ status_timeout: 0.5
 enable_view: true
 view_max_width: 1280
 use_back_event: true
-# Number keys select the NEXT span's subtask while paused; customize per task.
+
 subtasks:
   '1': approach
   '2': grasp

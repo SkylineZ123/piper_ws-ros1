@@ -13,7 +13,6 @@ from std_srvs.srv import SetBool
 from .configuration import load_config, package_file
 from .core import effective_joint_speed, interpolate_eef, read_trajectory, transform
 from .kinematics import Kinematics
-from .replay_tools import check_physical_speed
 
 
 def main():
@@ -22,8 +21,8 @@ def main():
     p.add_argument('--config', required=True)
     p.add_argument('--speed', type=float, default=1)
     a = p.parse_args(rospy.myargv()[1:])
-    if not 0 < a.speed <= 1:
-        raise ValueError('Invalid speed')
+    if not np.isfinite(a.speed) or a.speed <= 0:
+        raise ValueError('speed must be finite and positive')
     meta, actions, stamps = read_trajectory(a.trajectory)
     rospy.init_node('pika_replay')
     actual = rospy.get_param('/pika_piper/controller', {})
@@ -69,8 +68,9 @@ def main():
             raise ValueError('Invalid replay trajectory')
         seed = q
         solved.append(np.asarray(q).copy())
-    replay_joint_speed = effective_joint_speed(c)
-    check_physical_speed(solved, stamps, a.speed, replay_joint_speed, c['max_gripper_speed'])
+    # Recorded timing is replayed directly. Speed limits only shape the initial
+    # approach below; they do not reject or clip recorded action transitions.
+    approach_joint_speed = effective_joint_speed(c)
     pub = rospy.Publisher('/pika_piper/replay_input', JointState, queue_size=1)
     deadline = time.monotonic() + 5
     while pub.get_num_connections() == 0:
@@ -99,7 +99,7 @@ def main():
         start = np.asarray(feedback.position)
         duration = max(
             2.0,
-            np.max(abs(first[:6] - start[:6])) / replay_joint_speed,
+            np.max(abs(first[:6] - start[:6])) / approach_joint_speed,
             abs(first[6] - start[6]) / c['max_gripper_speed'],
         )
         hz = c['control_hz']

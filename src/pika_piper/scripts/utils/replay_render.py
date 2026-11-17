@@ -13,7 +13,7 @@ from .collection import EEF_NAMES, JOINT_NAMES
 from .replay_tools import CameraFrames, continuous_spans
 
 
-def write_csv(path, arrays, action_type='joint'):
+def write_csv(path, arrays, action_type='joint', state_type='joint'):
     keys = list(arrays)
     columns = []
     for key in keys:
@@ -23,6 +23,7 @@ def write_csv(path, arrays, action_type='joint'):
             if (
                 key in ('observation.eef_state', 'eef_command')
                 or (key == 'action' and action_type == 'eef6d')
+                or (key == 'observation.state' and state_type == 'eef6d')
             )
             else JOINT_NAMES
         )

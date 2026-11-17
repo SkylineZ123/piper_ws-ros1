@@ -31,10 +31,10 @@ tracking_stall_speed_rad_s: 0.02
 tracking_stall_timeout_s: 0.75
 fps: 25
 source_timeout: 0.2
-# Software bounds for bounded-policy/replay/startup only. Official live output
-# uses upstream interpolation; the verified motor firmware speed still applies.
+# Software bounds for bounded teleop, startup and the replay first-frame approach.
+# Recorded replay targets bypass software speed clipping; firmware settings remain.
 max_joint_speed: 1.5
-# Teleoperation command acceleration, rad/s^2; strict replay retains its contract.
+# Bounded teleoperation/startup command acceleration, rad/s^2.
 max_joint_acceleration: 15.0
 max_gripper_speed: 0.4
 # Cartesian caps for the optional bounded policy (not official live IK).

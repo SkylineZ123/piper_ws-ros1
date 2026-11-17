@@ -18,6 +18,7 @@ install(TARGETS pika_serial RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION
 catkin_install_python(PROGRAMS
   scripts/bringup.py scripts/control_node.py scripts/record_session.py
   scripts/replay_worker.py scripts/replay.py
+  scripts/convert_dataset_eef6d.py
   scripts/doctor.py scripts/check_bringup_env.py scripts/measure_teleop.py
   scripts/check_ik_regression.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

@@ -63,8 +63,6 @@ class WriterClient:
         self.temporary = tempfile.TemporaryDirectory(prefix='pika-lerobot-')
         self.sock, child_sock = socket.socketpair()
         env = dict(os.environ)
-        # Use the SAME interpreter, but keep the encoder's module path free of
-        # ROS native extensions. This does not switch Python environments.
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
         env['PYTHONNOUSERSITE'] = '1'
         env['HF_HUB_OFFLINE'] = '1'

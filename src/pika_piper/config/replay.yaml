@@ -1,9 +1,9 @@
 # Paths are relative to this YAML, not the shell/IDE working directory.
 # latest selects the most recently saved non-empty Pika LeRobot dataset.
-dataset: /home/zzq/piper_ws-ros1/data/dataset_20261117_125419_27453b8b
+dataset: /home/zzq/piper_ws-ros1/data/pick_and_place_tube_20261107_v1
 search_dir: ../../../data
-repo_id: /home/zzq/piper_ws-ros1/data/dataset_20261117_125419_27453b8b                    # inferred from pika_pipeline.json
-episodes: 2                    # all, 0, or [0, 1, 2]
+repo_id: /home/zzq/piper_ws-ros1/data/pick_and_place_tube_20261107_v1                    # inferred from pika_pipeline.json
+episodes: 49                    # all, 0, or [0, 1, 2]
 segment_id: null                 # optional segment_id within each episode
 start_frame: 0                  # original episode frame index, inclusive
 end_frame: null                 # exclusive; null means end of episode

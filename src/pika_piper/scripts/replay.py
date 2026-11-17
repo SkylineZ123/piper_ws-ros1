@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
+from utils.collection import EEF_NAMES
 from utils.configuration import control_environment
 from utils.core import read_trajectory, validate_metadata
 from utils.replay_config import DEFAULT_OPTIONS as DEFAULT_OPTIONS
@@ -36,6 +37,12 @@ def run(options):
     info = json.loads((root / 'meta/info.json').read_text())
     meta = json.loads((root / 'meta/pika_pipeline.json').read_text())
     validate_metadata(meta)
+    meta.setdefault(
+        'state_type',
+        'eef6d'
+        if info.get('features', {}).get('observation.state', {}).get('names') == EEF_NAMES
+        else 'joint',
+    )
     episodes = select_episodes(options['episodes'], info['total_episodes'])
     if not episodes:
         raise ValueError('Dataset has no saved episodes')
@@ -97,7 +104,10 @@ def run(options):
                 table, episode, options['start_frame'], options['end_frame'], options['segment_id']
             )
             if meta['action_type'] == 'eef6d' and 'observation.eef_state' not in arrays:
-                raise ValueError('EEF replay requires observation.eef_state')
+                if meta['state_type'] == 'eef6d':
+                    arrays['observation.eef_state'] = arrays['observation.state']
+                else:
+                    raise ValueError('EEF replay requires observation.eef_state')
             if options['execute']:
                 execution = replay_span(arrays, ds.fps)
             prefix = 'episode_%03d' % episode
@@ -111,10 +121,16 @@ def run(options):
             artifacts = dict(
                 csv=prefix + '.csv', json=prefix + '_quality.json', video=None, plots=[]
             )
-            write_csv(output / artifacts['csv'], arrays, meta['action_type'])
+            write_csv(output / artifacts['csv'], arrays, meta['action_type'], meta['state_type'])
             if options['save_plots']:
                 pairs = [
-                    ('joint_command', 'observation.state', False),
+                    (
+                        'joint_command',
+                        'observation.joint_state'
+                        if meta['state_type'] == 'eef6d'
+                        else 'observation.state',
+                        False,
+                    ),
                     ('eef_command', 'observation.eef_state', True),
                 ]
                 for command, state, eef in pairs:
@@ -152,6 +168,7 @@ def run(options):
         dataset=str(root),
         fps=info['fps'],
         action_type=meta['action_type'],
+        state_type=meta['state_type'],
         units=meta['units'],
         urdf_sha256=meta['urdf_sha256'],
         episodes=reports,
