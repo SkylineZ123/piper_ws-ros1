@@ -1,0 +1,24 @@
+# Run record_session.py with your Python 3.12 environment. The writer uses
+# that same interpreter (sys.executable); no separate Python path is needed.
+repo_id: local/pika_piper
+output_dir: data/pika_lerobot
+action_type: joint              # joint or eef6d (xyz + RPY + gripper)
+max_timesteps: 5000
+image_height: 480
+image_width: 640
+video_codec: h264
+streaming_encoding: true
+encoder_threads: 2
+encoder_queue_maxsize: 60
+alignment_delay: 0.06           # wait for future state bracket/camera neighbor
+alignment_timeout: 0.5          # pause on missing streams or acquisition backlog
+status_timeout: 0.5
+enable_view: true
+view_max_width: 1280
+use_back_event: true
+# Number keys select the NEXT span's subtask while paused; customize per task.
+subtasks:
+  '1': approach
+  '2': grasp
+  '3': move
+  '4': release

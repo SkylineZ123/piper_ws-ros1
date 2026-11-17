@@ -25,8 +25,20 @@ def package_file(relative, package='pika_piper'):
         if manifest.is_file() and local.is_file():
             if ET.parse(str(manifest)).getroot().findtext('name') == package:
                 return local
+        # A catkin source space may contain nested repositories, e.g.
+        # src/piper_moveit/piper_with_gripper_moveit. Let rospkg index the
+        # current source space instead of assuming every package is a sibling.
+        source_space = own_root.parent
+        try:
+            indexed_root = Path(rospkg.RosPack(ros_paths=[str(source_space)]).get_path(package))
+            indexed_file = indexed_root / relative
+            if indexed_file.is_file():
+                return indexed_file
+        except rospkg.ResourceNotFound:
+            pass
         raise rospkg.ResourceNotFound(
-            '%s (also checked %s; source this workspace\'s devel/setup.bash)' % (package, local),
+            '%s (also checked %s and indexed source space %s; source this workspace\'s devel/setup.bash)' %
+            (package, local, source_space),
             ros_paths=error.ros_paths) from error
 
 
