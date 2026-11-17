@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import shutil
+import xml.etree.ElementTree as ET
 
 import yaml
 
@@ -9,10 +10,24 @@ MOTION_KEYS = ('max_tcp_speed', 'max_tcp_angular_speed', 'max_joint_speed',
                'max_joint_acceleration', 'max_gripper_speed', 'translation_scale')
 
 
-def package_file(relative):
+def package_file(relative, package='pika_piper'):
     # rospkg also resolves the install space, where scripts and share data differ.
     import rospkg
-    return Path(rospkg.RosPack().get_path('pika_piper')) / relative
+    try:
+        return Path(rospkg.RosPack().get_path(package)) / relative
+    except rospkg.ResourceNotFound as error:
+        # Direct source-file execution (e.g. from an IDE) can find this Python
+        # module before the workspace has been added to ROS_PACKAGE_PATH.
+        own_root = Path(__file__).resolve().parents[2]
+        root = own_root if package == 'pika_piper' else own_root.parent / package
+        local = root / relative
+        manifest = root / 'package.xml'
+        if manifest.is_file() and local.is_file():
+            if ET.parse(str(manifest)).getroot().findtext('name') == package:
+                return local
+        raise rospkg.ResourceNotFound(
+            '%s (also checked %s; source this workspace\'s devel/setup.bash)' % (package, local),
+            ros_paths=error.ros_paths) from error
 
 
 def load_config(path=None, overrides=None):

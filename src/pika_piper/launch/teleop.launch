@@ -9,7 +9,7 @@
   <arg name="translation_scale" default=""/>
   <arg name="motion_speed_percent" default=""/>
   <arg name="auto_enable" default="true"/>
-  <arg name="start_cameras" default="false"/>
+  <arg name="start_cameras" default="true"/>
   <arg name="top_serial" default="327122074756"/>
   <arg name="wrist_serial" default="148522072680"/>
   <arg name="wrist_namespace" default="cam_leftwrist"/>

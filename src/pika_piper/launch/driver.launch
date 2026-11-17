@@ -1,0 +1,23 @@
+<launch>
+  <arg name="config" default="$(find pika_piper)/config/pipeline.yaml"/>
+  <arg name="control_python" default="$(optenv PIKA_CONTROL_PYTHON /usr/bin/python3)"/>
+  <arg name="motion_speed_percent" default=""/>
+  <arg name="auto_enable" default="true"/>
+  <group ns="pika_piper">
+    <node pkg="piper" type="piper_ctrl_single_node.py" name="driver" launch-prefix="$(arg control_python)" output="screen" required="true" clear_params="true">
+      <!-- Piper SDK is installed with pip in control_python's environment. -->
+      <env name="LD_LIBRARY_PATH" value="$(eval arg('control_python').rsplit('/', 1)[0] + '/../lib:' + optenv('LD_LIBRARY_PATH', ''))"/>
+      <env name="PYTHONNOUSERSITE" value="1"/>
+      <env name="OMP_NUM_THREADS" value="1"/>
+      <env name="OPENBLAS_NUM_THREADS" value="1"/>
+      <env name="MKL_NUM_THREADS" value="1"/>
+      <rosparam command="load" file="$(arg config)"/>
+      <param name="auto_enable" value="$(arg auto_enable)"/>
+      <param name="gripper_exist" value="true"/>
+      <param name="fresh_feedback" value="true"/>
+      <param name="motion_speed_percent" type="int" value="$(arg motion_speed_percent)" if="$(eval arg('motion_speed_percent') != '')"/>
+      <remap from="joint_ctrl_single" to="command"/>
+      <remap from="joint_states_single" to="feedback"/>
+    </node>
+  </group>
+</launch>
