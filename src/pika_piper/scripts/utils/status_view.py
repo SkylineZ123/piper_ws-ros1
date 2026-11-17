@@ -1,4 +1,5 @@
 """Main-thread OpenCV camera/status view, with terminal single-key fallback."""
+
 import os
 import select
 import sys
@@ -16,6 +17,7 @@ class TerminalKeys:
         if sys.stdin.isatty():
             import termios
             import tty
+
             self.previous = termios.tcgetattr(sys.stdin.fileno())
             tty.setcbreak(sys.stdin.fileno())
         return self
@@ -33,6 +35,7 @@ class TerminalKeys:
     def __exit__(self, *_):
         if self.previous is not None:
             import termios
+
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self.previous)
 
 
@@ -51,6 +54,7 @@ class StatusView:
             return self
         try:
             import cv2
+
             self.cv2 = cv2
             cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
             cv2.waitKey(1)
@@ -70,39 +74,62 @@ class StatusView:
                 image = np.zeros((480, 640, 3), np.uint8)
             h, w = image.shape[:2]
             tile = cv2.resize(image[:, :, ::-1], (int(w * 300 / h), 300))
-            cv2.putText(tile, name, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, .65, (40, 230, 40), 2)
+            cv2.putText(tile, name, (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (40, 230, 40), 2)
             tiles.append(tile)
         strip = np.concatenate(tiles, axis=1)
         if strip.shape[1] > self.max_width:
-            strip = cv2.resize(strip, (self.max_width, int(strip.shape[0] * self.max_width / strip.shape[1])))
+            strip = cv2.resize(
+                strip, (self.max_width, int(strip.shape[0] * self.max_width / strip.shape[1]))
+            )
         panel = np.zeros((340, strip.shape[1], 3), np.uint8)
 
-        def put(text, y, color=(225, 225, 225), scale=.55):
+        def put(text, y, color=(225, 225, 225), scale=0.55):
             # Built-in OpenCV fonts render ASCII. Unicode task text is retained
             # unchanged in dataset metadata even when the view shows '?'.
             text = str(text).encode('ascii', errors='replace').decode('ascii')
-            while scale > .3 and cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0] > panel.shape[1] - 20:
-                scale -= .03
-            cv2.putText(panel, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+            while (
+                scale > 0.3
+                and cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0]
+                > panel.shape[1] - 20
+            ):
+                scale -= 0.03
+            cv2.putText(
+                panel, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA
+            )
 
         green, red, yellow = (60, 230, 60), (50, 60, 240), (0, 225, 235)
         put('TASK: ' + status.get('task', ''), 24, green)
         state = 'REC' if status.get('recording') else 'PAUSED'
-        put('%s | teleop=%s | BACK=%d' % (state, status.get('mode', '?'), bool(status.get('back'))), 54,
-            red if status.get('recording') else yellow, .7)
-        put('episode #%d | buffered %d | %.1f fps | %.1f s' % (
-            status.get('episode_index', 0), status.get('buffered_frames', 0),
-            status.get('fps', 0), status.get('elapsed', 0)), 84)
-        put('SAVED: %d episodes / %d frames' % (
-            status.get('saved_episodes', 0), status.get('saved_frames', 0)), 113, green)
-        put('SUBTASK: ' + status.get('skill_text', ''), 151, yellow, .85)
+        put(
+            '%s | teleop=%s | BACK=%d' % (state, status.get('mode', '?'), bool(status.get('back'))),
+            54,
+            red if status.get('recording') else yellow,
+            0.7,
+        )
+        put(
+            'episode #%d | buffered %d | %.1f fps | %.1f s'
+            % (
+                status.get('episode_index', 0),
+                status.get('buffered_frames', 0),
+                status.get('fps', 0),
+                status.get('elapsed', 0),
+            ),
+            84,
+        )
+        put(
+            'SAVED: %d episodes / %d frames'
+            % (status.get('saved_episodes', 0), status.get('saved_frames', 0)),
+            113,
+            green,
+        )
+        put('SUBTASK: ' + status.get('skill_text', ''), 151, yellow, 0.85)
         put(status.get('message', ''), 185, yellow)
         put('Controller: ' + status.get('reason', ''), 214)
         put('c start/resume | SPACE pause | s save | r discard', 254)
         put('1..9 subtask (paused) | e back-event | t teleop (paused)', 282)
         put('q/ESC exit (unsaved buffer discarded)', 310)
         cv2.imshow(self.window_name, np.concatenate([strip, panel], axis=0))
-        key = cv2.waitKey(1) & 0xff
+        key = cv2.waitKey(1) & 0xFF
         try:
             if cv2.getWindowProperty(self.window_name, cv2.WND_PROP_VISIBLE) < 1:
                 return 'q'

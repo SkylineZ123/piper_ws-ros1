@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 import yaml
 
-from pika_piper.core import transform, effective_joint_speed
-from pika_piper.kinematics import Kinematics
-from pika_piper.teleop import TeleopIK, motion_bounds, pose_error
+from utils.core import transform, effective_joint_speed
+from utils.kinematics import Kinematics
+from utils.teleop import TeleopIK, motion_bounds, pose_error
 
 
 @pytest.fixture(scope='module')

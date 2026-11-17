@@ -3,6 +3,7 @@
 Reference: PikaAnyArm d2b8b84, forward_inverse_kinematics.py / piper_IK.py.
 The calibrated TCP, stable pose objective and SRDF validation stay local.
 """
+
 import time
 
 import numpy as np
@@ -16,16 +17,17 @@ class OfficialInterpolator:
     A selected segment completes before consuming the latest cached target.
     Call sample() at 200 Hz; missed calls never cause a burst of old points.
     """
-    rate_hz = 200.
-    idle_hz = 50.
-    threshold = np.deg2rad(30.)
-    angle_step = np.deg2rad(1.)
 
-    def __init__(self, timeout=1.):
+    rate_hz = 200.0
+    idle_hz = 50.0
+    threshold = np.deg2rad(30.0)
+    angle_step = np.deg2rad(1.0)
+
+    def __init__(self, timeout=1.0):
         self.timeout = timeout
         self.target = self.segment = None
-        self.target_at = 0.
-        self.next_at = 0.
+        self.target_at = 0.0
+        self.next_at = 0.0
         self.index = self.steps = 0
 
     def offer(self, command, now):
@@ -51,7 +53,7 @@ class OfficialInterpolator:
         if self.segment is None:
             difference = float(np.max(np.abs(self.target[:6] - previous[:6])))
             if difference <= self.threshold:
-                self.next_at = now + 1. / self.idle_hz
+                self.next_at = now + 1.0 / self.idle_hz
                 return self.target.copy()
             self.steps = int(difference / self.angle_step)
             self.index = 0
@@ -60,10 +62,10 @@ class OfficialInterpolator:
         self.index += 1
         command = end.copy()
         command[:6] = start[:6] + (end[:6] - start[:6]) * self.index / self.steps
-        self.next_at = now + 1. / self.rate_hz
+        self.next_at = now + 1.0 / self.rate_hz
         if self.index >= self.steps:
             self.segment = None
-            self.next_at = now + 1. / self.idle_hz
+            self.next_at = now + 1.0 / self.idle_hz
         return command
 
 
@@ -98,7 +100,7 @@ class OfficialTeleopIK(TeleopIK):
             command = self.k.solve_ik(target, initial, width, posture_reference=previous)
             difference = float(np.max(np.abs(self.history - command[:6])))
             self.initial = command[:6].copy()
-            if difference > 30. / 180. * 3.1415:
+            if difference > 30.0 / 180.0 * 3.1415:
                 self.initial = np.zeros(6)
                 reset = True
             self.history = command[:6].copy()
@@ -108,16 +110,28 @@ class OfficialTeleopIK(TeleopIK):
             reason = str(error)
         info = dict(self.k.last_ik or {})
         position, orientation = pose_error(self.k.fk(previous), target)
-        self.last = dict(info, backend='official_history_pinocchio_casadi_ipopt',
-            policy=self.policy, state='target_accepted' if command is not None else 'unreachable',
-            accepted=command is not None, command_valid=command is not None, reason=reason,
-            tcp_limited=False, step_fraction=1. if command is not None else 0., attempts=1,
-            seed_rad=initial.tolist(), next_seed_rad=self.initial.tolist(), seed_reset=reset,
-            raw_position_error_m=position, raw_orientation_error_rad=orientation,
+        self.last = dict(
+            info,
+            backend='official_history_pinocchio_casadi_ipopt',
+            policy=self.policy,
+            state='target_accepted' if command is not None else 'unreachable',
+            accepted=command is not None,
+            command_valid=command is not None,
+            reason=reason,
+            tcp_limited=False,
+            step_fraction=1.0 if command is not None else 0.0,
+            attempts=1,
+            seed_rad=initial.tolist(),
+            next_seed_rad=self.initial.tolist(),
+            seed_reset=reset,
+            raw_position_error_m=position,
+            raw_orientation_error_rad=orientation,
             target_matrix=self.k.fk(command).tolist() if command is not None else None,
             raw_target_matrix=np.asarray(target).tolist(),
             solve_ms=(time.perf_counter() - started) * 1000,
-            budget_exceeded=False, feedback_recovery=False)
+            budget_exceeded=False,
+            feedback_recovery=False,
+        )
         self.k.last_ik = self.last
         return command
 

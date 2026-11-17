@@ -2,7 +2,7 @@
 from pathlib import Path
 import unittest
 import numpy as np
-from pika_piper.kinematics import Kinematics
+from utils.kinematics import Kinematics
 
 class KinematicChecks(unittest.TestCase):
     @classmethod

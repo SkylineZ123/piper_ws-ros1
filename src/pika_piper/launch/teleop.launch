@@ -1,6 +1,6 @@
 <launch>
   <arg name="config" default="$(find pika_piper)/config/pipeline.yaml"/>
-  <arg name="control_python" default="$(optenv PIKA_CONTROL_PYTHON /home/zzq/.conda/envs/pika-bringup/bin/python3)"/>
+  <arg name="control_python" default="$(optenv PIKA_CONTROL_PYTHON /home/zzq/.conda/envs/pika-bringup/bin/python)"/>
   <arg name="control_hz" default=""/>
   <arg name="max_tcp_speed" default=""/>
   <arg name="max_tcp_angular_speed" default=""/>

@@ -1,7 +1,7 @@
 # Run record_session.py with your Python 3.12 environment. The writer uses
 # that same interpreter (sys.executable); no separate Python path is needed.
 repo_id: local/pika_piper
-output_dir: data/pika_lerobot
+output_dir: ../../../data/pika_lerobot  # relative to this YAML; --output overrides
 action_type: joint              # joint or eef6d (xyz + RPY + gripper)
 max_timesteps: 5000
 image_height: 480

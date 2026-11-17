@@ -1,12 +1,13 @@
 """Isolate encoding from ROS/GUI while using the launching Python environment."""
+
 import json
 import os
-from pathlib import Path
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 
@@ -75,18 +76,27 @@ class WriterClient:
             env[key] = '1'
         try:
             self.process = subprocess.Popen(
-                [sys.executable, '-m', 'pika_piper.lerobot_writer', '--fd', str(child_sock.fileno())],
-                pass_fds=(child_sock.fileno(),), env=env, start_new_session=True)
+                [sys.executable, '-m', 'utils.lerobot_writer', '--fd', str(child_sock.fileno())],
+                pass_fds=(child_sock.fileno(),),
+                env=env,
+                start_new_session=True,
+            )
             child_sock.close()
-            self.initial = self.call('init', config=config, metadata=metadata,
-                                     root=str(root), repo_id=repo_id, resume=resume)
+            self.initial = self.call(
+                'init',
+                config=config,
+                metadata=metadata,
+                root=str(root),
+                repo_id=repo_id,
+                resume=resume,
+            )
         except BaseException:
             child_sock.close()
             self.close()
             raise
 
     def call(self, operation, frame=None, **values):
-        self.sock.settimeout(5. if operation == 'frame' else 180.)
+        self.sock.settimeout(5.0 if operation == 'frame' else 180.0)
         packet = dict(frame or {}, op=operation, **values)
         send_packet(self.sock, packet)
         reply = receive_packet(self.sock)

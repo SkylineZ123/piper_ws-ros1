@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import yaml
 
-from pika_piper.kinematics import Kinematics
-from pika_piper.official import OfficialInterpolator, OfficialTeleopIK
+from utils.kinematics import Kinematics
+from utils.official import OfficialInterpolator, OfficialTeleopIK
 
 
 @pytest.fixture(scope='module')
@@ -18,8 +18,7 @@ def model():
     k=Kinematics(root/'piper_description/urdf/piper_description.urdf',root/'piper_description',cfg['tcp_xyzrpy'],
         root/'piper_moveit/piper_with_gripper_moveit/config/piper_description.srdf',
         feedback_limits_deg=cfg['verified_feedback_limits_deg'],feedback_tolerance=cfg['feedback_tolerance_rad'])
-    spec=importlib.util.spec_from_file_location('official_benchmark',root/'pika_piper/scripts/benchmark_teleop.py')
-    bench=importlib.util.module_from_spec(spec);spec.loader.exec_module(bench)
+    import controller_harness as bench
     return k,cfg,bench
 
 
@@ -94,9 +93,9 @@ def test_stale_cached_target_is_not_replayed():
     assert scheduler.sample(initial,11.001) is None and scheduler.segment is None
 
 
-def test_fresh_stationary_feedback_is_reported_then_stops_output(model):
+def test_fresh_stationary_feedback_is_reported_then_stops_output(model, monkeypatch):
     k,cfg,bench=model;initial=np.array([.1,.7,-1.2,.2,.5,.1,.03])
-    c,clock,result=bench.controller(k,cfg,initial)
+    c,clock,result=bench.controller(k,cfg,initial,monkeypatch)
     assert isinstance(c.teleop_solver,OfficialTeleopIK)
     goal=initial.copy();goal[0]+=.3
     states=[]
@@ -115,9 +114,9 @@ def test_fresh_stationary_feedback_is_reported_then_stops_output(model):
     np.testing.assert_array_equal(result.command,previous)
 
 
-def test_runtime_invalid_feedback_is_rejected_before_output(model):
+def test_runtime_invalid_feedback_is_rejected_before_output(model, monkeypatch):
     k,cfg,bench=model;initial=np.array([.1,.7,-1.2,.2,.5,.1,.03])
-    c,clock,result=bench.controller(k,cfg,initial)
+    c,clock,result=bench.controller(k,cfg,initial,monkeypatch)
     c.feedback=initial.copy();c.feedback[1]=-.04
     clock.now+=.02;c.hand_at=c.feedback_at=c.grip_at=c.quality_at=c.echo_at=clock.now
     c.tick(None)
@@ -125,9 +124,9 @@ def test_runtime_invalid_feedback_is_rejected_before_output(model):
     assert result.command is None
 
 
-def test_rejected_target_cache_expires_without_false_driver_fault_and_can_recover(model):
+def test_rejected_target_cache_expires_without_false_driver_fault_and_can_recover(model, monkeypatch):
     k,cfg,bench=model;initial=np.array([.1,.7,-1.2,.2,.5,.1,.03])
-    c,clock,result=bench.controller(k,cfg,initial)
+    c,clock,result=bench.controller(k,cfg,initial,monkeypatch)
     clock.now+=.02;c.hand_at=c.feedback_at=c.grip_at=c.quality_at=c.echo_at=clock.now
     c.tick(None);assert result.command is not None
     c.echo_at=clock.now

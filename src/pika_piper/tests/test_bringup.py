@@ -1,7 +1,6 @@
 """Check dependency rejection before any hardware supervisor can be called."""
 import importlib.util
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -24,7 +23,7 @@ def argv(monkeypatch, *extra):
 def test_dry_run_does_not_run_dependency_check_or_supervisor(bringup,monkeypatch,capsys):
     monkeypatch.delenv('PIKA_CONTROL_PYTHON',raising=False)
     argv(monkeypatch,'--dry-run')
-    monkeypatch.setattr(bringup.subprocess,'run',lambda *a,**k:pytest.fail('subprocess started'))
+    monkeypatch.setattr(bringup,'check_control_environment',lambda *a,**k:pytest.fail('preflight started'))
     monkeypatch.setattr(bringup,'supervise',lambda *a,**k:pytest.fail('supervisor started'))
     assert bringup.main()==0
     assert 'control_python:='+sys.executable in capsys.readouterr().out
@@ -49,8 +48,9 @@ def test_invalid_speed_cannot_launch_hardware(bringup,monkeypatch):
 
 def test_missing_ik_dependencies_cannot_launch_driver(bringup,monkeypatch,capsys):
     argv(monkeypatch,'--control-python','/missing/solver/python')
-    def missing(command,**kwargs):raise subprocess.CalledProcessError(1,command)
-    monkeypatch.setattr(bringup.subprocess,'run',missing)
+    def missing(*args,**kwargs):
+        raise bringup.ReplaySetupError("ModuleNotFoundError: No module named 'casadi'")
+    monkeypatch.setattr(bringup,'check_control_environment',missing)
     monkeypatch.setattr(bringup,'supervise',lambda *a,**k:pytest.fail('hardware launch reached'))
     with pytest.raises(SystemExit) as error:bringup.main()
     assert error.value.code==2

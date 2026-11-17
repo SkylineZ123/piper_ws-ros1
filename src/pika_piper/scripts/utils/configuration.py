@@ -1,18 +1,26 @@
 """Load the same effective settings for direct Python and ROS node entry points."""
-from pathlib import Path
+
 import os
 import shutil
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import yaml
 
-MOTION_KEYS = ('max_tcp_speed', 'max_tcp_angular_speed', 'max_joint_speed',
-               'max_joint_acceleration', 'max_gripper_speed', 'translation_scale')
+MOTION_KEYS = (
+    'max_tcp_speed',
+    'max_tcp_angular_speed',
+    'max_joint_speed',
+    'max_joint_acceleration',
+    'max_gripper_speed',
+    'translation_scale',
+)
 
 
 def package_file(relative, package='pika_piper'):
     # rospkg also resolves the install space, where scripts and share data differ.
     import rospkg
+
     try:
         return Path(rospkg.RosPack().get_path(package)) / relative
     except rospkg.ResourceNotFound as error:
@@ -37,9 +45,10 @@ def package_file(relative, package='pika_piper'):
         except rospkg.ResourceNotFound:
             pass
         raise rospkg.ResourceNotFound(
-            '%s (also checked %s and indexed source space %s; source this workspace\'s devel/setup.bash)' %
-            (package, local, source_space),
-            ros_paths=error.ros_paths) from error
+            "%s (also checked %s and indexed source space %s; source this workspace's devel/setup.bash)"
+            % (package, local, source_space),
+            ros_paths=error.ros_paths,
+        ) from error
 
 
 def load_config(path=None, overrides=None):
@@ -57,7 +66,9 @@ def control_environment(python):
     executable = shutil.which(python) or python
     library = str(Path(executable).absolute().parent.parent / 'lib')
     env = os.environ.copy()
-    env['LD_LIBRARY_PATH'] = library + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
+    env['LD_LIBRARY_PATH'] = library + (
+        ':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else ''
+    )
     env['PYTHONNOUSERSITE'] = '1'
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS'):
         env[name] = '1'

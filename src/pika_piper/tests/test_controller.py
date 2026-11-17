@@ -26,8 +26,8 @@ def controller(monkeypatch):
         parent=module.split('.')[0];monkeypatch.setitem(sys.modules,parent,types.ModuleType(parent));m=types.ModuleType(module)
         for name in names:setattr(m,name,Msg)
         monkeypatch.setitem(sys.modules,module,m)
-    monkeypatch.setitem(sys.modules,'pika_piper.kinematics',types.SimpleNamespace(Kinematics=object))
-    spec=importlib.util.spec_from_file_location('test_control',Path(__file__).parents[1]/'scripts/control_node.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules,'utils.kinematics',types.SimpleNamespace(Kinematics=object))
+    spec=importlib.util.spec_from_file_location('utils.test_control',Path(__file__).parents[1]/'scripts/utils/controller.py');module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     c=module.Controller.__new__(module.Controller);c.lock=threading.RLock();c.mode='idle';c.reason='';c.last_fault=None;c.cfg={'source_timeout':.2,'control_hz':50};c.hand=np.eye(4);c.feedback=np.zeros(7);c.sent=None;c.anchor=None;c.robot_anchor=None;c.accurate=True
     c.k=types.SimpleNamespace(fk=lambda q:np.eye(4),ik=lambda target,seed,width:np.r_[seed[:6],width],urdf_hash='test',validate_configuration=lambda *args:None,info={},last_ik=None);now=time.monotonic()
     c.k.validate_feedback=lambda *args:c.k.validate_configuration(*args)
@@ -37,7 +37,7 @@ def controller(monkeypatch):
         last=None
         def warmup(self,previous):pass
         def step(self,target,previous,width,dt,velocity,config):
-            from pika_piper.core import limit_pose_step
+            from utils.core import limit_pose_step
             goal,limited=limit_pose_step(c.k.fk(previous),target,dt,config.get('max_tcp_speed',.15),config.get('max_tcp_angular_speed',1.))
             self.last={'tcp_limited':limited,'step_fraction':1.,'target_matrix':goal.tolist(),'state':'tracking'}
             return c.k.ik(goal,previous,width)
@@ -64,7 +64,7 @@ def test_reanchor_and_exclusive_replay(controller):
 
 
 def test_motion_reload_is_atomic_and_requires_pause(controller,monkeypatch):
-    from pika_piper.configuration import load_config
+    from utils.configuration import load_config
     c=controller;c.cfg=load_config(Path(__file__).parents[1]/'config/pipeline.yaml')
     c.cfg['max_tcp_speed']=.15
     params={'max_tcp_speed':.2,'max_joint_speed':1.2}
@@ -179,12 +179,12 @@ def test_stationary_ik_failure_is_reported_before_teleop_starts(controller):
 def test_real_ik_small_motion_through_controller_tick(controller,monkeypatch):
     # Run the actual controller, model, solver and limiter with fake ROS IO.
     # The simulated feedback assumes perfect tracking; no device is opened.
-    monkeypatch.delitem(sys.modules,'pika_piper.kinematics')
-    real=importlib.import_module('pika_piper.kinematics')
+    monkeypatch.delitem(sys.modules,'utils.kinematics')
+    real=importlib.import_module('utils.kinematics')
     root=Path(__file__).resolve().parents[2]
     k=real.Kinematics(root/'piper_description/urdf/piper_description.urdf',root/'piper_description',[0,0,.1358,0,0,0],root/'piper_moveit/piper_with_gripper_moveit/config/piper_description.srdf')
     c=controller;c.k=k;c.feedback=np.r_[np.deg2rad([-.596,30.118,-23.212,-3.097,34.591,3.656]),.03];c.width=.03
-    from pika_piper.teleop import TeleopIK
+    from utils.teleop import TeleopIK
     c.teleop_solver=TeleopIK(k)
     c.cfg.update(axis_rpy=[0,0,0],translation_scale=1.,max_joint_speed=.5,max_gripper_speed=.04)
     commands=[];c.cmd=types.SimpleNamespace(publish=lambda msg:commands.append(np.array(msg.position)))
@@ -216,9 +216,9 @@ def test_delayed_driver_echo_does_not_rewind_issued_command(controller):
 
 def test_current_audited_feedback_can_acquire_with_legal_first_command(controller,monkeypatch):
     import yaml
-    monkeypatch.delitem(sys.modules,'pika_piper.kinematics')
-    real=importlib.import_module('pika_piper.kinematics')
-    from pika_piper.teleop import TeleopIK
+    monkeypatch.delitem(sys.modules,'utils.kinematics')
+    real=importlib.import_module('utils.kinematics')
+    from utils.teleop import TeleopIK
     root=Path(__file__).resolve().parents[2]
     cfg=yaml.safe_load((root/'pika_piper/config/pipeline.yaml').read_text())
     c=controller;c.cfg=cfg
@@ -249,9 +249,9 @@ def test_current_audited_feedback_can_acquire_with_legal_first_command(controlle
 @pytest.mark.parametrize('pause_while_waiting',[False,True])
 def test_near_zero_start_waits_without_emitting_illegal_commands(controller,monkeypatch,pause_while_waiting):
     import yaml
-    monkeypatch.delitem(sys.modules,'pika_piper.kinematics')
-    real=importlib.import_module('pika_piper.kinematics')
-    from pika_piper.teleop import TeleopIK
+    monkeypatch.delitem(sys.modules,'utils.kinematics')
+    real=importlib.import_module('utils.kinematics')
+    from utils.teleop import TeleopIK
     root=Path(__file__).resolve().parents[2]
     c=controller;c.cfg=yaml.safe_load((root/'pika_piper/config/pipeline.yaml').read_text())
     c.cfg['max_joint_acceleration']=10.  # Exercise the two-tick waiting contract.
@@ -332,7 +332,7 @@ def test_resume_resets_sense_reference_after_repositioning(controller):
     assert c.set_teleop(on).success
     assert c.set_teleop(off).success
     assert c.anchor is None
-    from pika_piper.core import transform,relative_target
+    from utils.core import transform,relative_target
     c.hand=transform([.2,.3,.4,.2,-.3,.4])
     c.hand_at=c.feedback_at=c.grip_at=c.quality_at=time.monotonic()
     assert c.set_teleop(on).success

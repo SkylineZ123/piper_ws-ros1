@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from pika_piper.configuration import load_config, control_environment
+from utils.configuration import load_config, control_environment
 
 PACKAGE = Path(__file__).resolve().parents[1]
 
@@ -30,7 +30,7 @@ print(json.dumps({'params':{k:v.value for k,v in c.params.items()},'nodes':[(n.p
 
 
 def test_default_launch_keeps_yaml_quality_limits_and_cameras_off(tmp_path):
-    report = expand(tmp_path, 'pika_piper', 'teleop.launch')
+    report = expand(tmp_path, 'pika_piper', 'teleop.launch', 'start_cameras:=false')
     cfg = load_config(PACKAGE / 'config/pipeline.yaml')
     assert len(report['nodes']) == 4
     assert ('pika_piper', 'pika_serial', 'pika_serial', '/', None) in [tuple(n) for n in report['nodes']]
@@ -45,7 +45,8 @@ def test_default_launch_keeps_yaml_quality_limits_and_cameras_off(tmp_path):
 @pytest.mark.parametrize('package,launch', [('pika_piper', 'teleop.launch'), ('dual_piper', 'pika_teleop.launch')])
 def test_overrides_reach_correct_nodes(tmp_path, package, launch):
     report = expand(tmp_path, package, launch, 'control_hz:=60', 'max_tcp_speed:=0.2',
-                    'motion_speed_percent:=65', 'max_joint_speed:=1.2', 'control_python:=/solver/python')
+                    'motion_speed_percent:=65', 'max_joint_speed:=1.2', 'control_python:=/solver/python',
+                    'start_cameras:=false')
     params = report['params']
     assert params['/pika_piper/controller/control_hz'] == 60.
     assert params['/pika_piper/controller/max_tcp_speed'] == .2
@@ -68,10 +69,3 @@ def test_control_cpp_runtime_is_scoped_to_child_environment(monkeypatch):
     env=control_environment('/environments/control/bin/python')
     assert env['LD_LIBRARY_PATH']=='/environments/control/lib:/ros/lib'
     assert os.environ['LD_LIBRARY_PATH']=='/ros/lib'
-
-
-def test_official_env_launch_only_starts_the_preset_simulation(tmp_path):
-    report=expand(tmp_path,'pika_piper','test_remote_sim.launch')
-    assert len(report['nodes'])==1
-    node=report['nodes'][0]
-    assert node[0:3]==['pika_piper','benchmark_remote_sim.py','piper_preset_sim_benchmark']

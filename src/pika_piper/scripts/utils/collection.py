@@ -1,4 +1,5 @@
 """ROS-independent live alignment and operator state machine (SI units)."""
+
 import bisect
 import threading
 import time
@@ -23,12 +24,14 @@ class LiveStreams:
     def __init__(self, pipeline, camera_capacity=80):
         self.cfg = pipeline
         self.lock = threading.RLock()
-        self.series = {name: ([], []) for name in
-                       list(NUMERIC_TOPICS.values()) + list(pipeline['cameras'])}
-        self.capacity = {name: camera_capacity if name in pipeline['cameras'] else 1024
-                         for name in self.series}
+        self.series = {
+            name: ([], []) for name in list(NUMERIC_TOPICS.values()) + list(pipeline['cameras'])
+        }
+        self.capacity = {
+            name: camera_capacity if name in pipeline['cameras'] else 1024 for name in self.series
+        }
         self.controller = {'mode': 'unknown', 'reason': 'waiting for controller'}
-        self.controller_at = 0.
+        self.controller_at = 0.0
         self.stop_sequence = 0
 
     def put(self, name, stamp, value):
@@ -60,14 +63,17 @@ class LiveStreams:
 
     def preview(self):
         with self.lock:
-            return {name: self.series[name][1][-1] for name in self.cfg['cameras']
-                    if self.series[name][1]}
+            return {
+                name: self.series[name][1][-1]
+                for name in self.cfg['cameras']
+                if self.series[name][1]
+            }
 
     def ready(self, now, timeout):
         with self.lock:
             for name in ['state', 'eef_state'] + list(self.cfg['cameras']):
                 times = self.series[name][0]
-                if not times or not -.1 <= now - times[-1] <= timeout:
+                if not times or not -0.1 <= now - times[-1] <= timeout:
                     return False, 'waiting for fresh ' + name
         return True, ''
 
@@ -109,8 +115,17 @@ class CollectionSession:
     retain the physical discontinuity. No frame grid is skipped on missing data.
     """
 
-    def __init__(self, streams, writer, config, teleop, now, log=print,
-                 cancelled=lambda: False, notify=lambda _: None):
+    def __init__(
+        self,
+        streams,
+        writer,
+        config,
+        teleop,
+        now,
+        log=print,
+        cancelled=lambda: False,
+        notify=lambda _: None,
+    ):
         self.streams, self.writer, self.cfg = streams, writer, config
         self.teleop, self.now, self.log = teleop, now, log
         self.cancelled, self.notify = cancelled, notify
@@ -124,7 +139,7 @@ class CollectionSession:
         self.saved_episodes = 0
         self.saved_frames = 0
         self.message = 'Ready: c to start'
-        self.measured_fps = 0.
+        self.measured_fps = 0.0
         self._last_frame_wall = None
         self._last_clock = None
         self._last_source = None
@@ -273,15 +288,18 @@ class CollectionSession:
             if now - due > self.cfg['alignment_timeout'] / 2:
                 self.pause(reason + '; buffered episode retained')
             return
-        frame.update(source_timestamp=self.next_stamp, segment_id=self.segment_id,
-                     subtask_index=list(self.subtasks).index(self.subtask) if self.subtask else 0,
-                     back_event=int(self.back))
+        frame.update(
+            source_timestamp=self.next_stamp,
+            segment_id=self.segment_id,
+            subtask_index=list(self.subtasks).index(self.subtask) if self.subtask else 0,
+            back_event=int(self.back),
+        )
         self._counts(self.writer.call('frame', frame))
         self.primed = True
         self._last_source = self.next_stamp
         if self._last_frame_wall is not None:
             instantaneous = 1 / max(1e-6, wall - self._last_frame_wall)
-            self.measured_fps = .8 * self.measured_fps + .2 * instantaneous
+            self.measured_fps = 0.8 * self.measured_fps + 0.2 * instantaneous
         else:
             self.measured_fps = float(self.cfg['fps'])
         self._last_frame_wall = wall
@@ -291,10 +309,18 @@ class CollectionSession:
 
     def snapshot(self):
         status = self.streams.control_status()[0]
-        return dict(recording=self.collecting, back=self.back,
-                    task=self.cfg['task'], skill_text=self.subtasks.get(self.subtask, ''),
-                    episode_index=self.saved_episodes, buffered_frames=self.frames,
-                    saved_episodes=self.saved_episodes, saved_frames=self.saved_frames,
-                    fps=self.measured_fps, elapsed=self.frames / self.cfg['fps'],
-                    mode=status.get('mode', 'unknown'), reason=status.get('reason', ''),
-                    message=self.message)
+        return dict(
+            recording=self.collecting,
+            back=self.back,
+            task=self.cfg['task'],
+            skill_text=self.subtasks.get(self.subtask, ''),
+            episode_index=self.saved_episodes,
+            buffered_frames=self.frames,
+            saved_episodes=self.saved_episodes,
+            saved_frames=self.saved_frames,
+            fps=self.measured_fps,
+            elapsed=self.frames / self.cfg['fps'],
+            mode=status.get('mode', 'unknown'),
+            reason=status.get('reason', ''),
+            message=self.message,
+        )

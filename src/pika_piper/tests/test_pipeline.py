@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 import numpy as np
 import pytest
-from pika_piper.core import transform,relative_target,limit_step,align_series,interpolate_eef,read_trajectory
-from pika_piper.core import limit_pose_step
-from pika_piper.dataset import aligned_episodes
+from utils.core import transform,relative_target,limit_step,align_series,interpolate_eef,read_trajectory
+from utils.core import limit_pose_step
+from utils.legacy_bag import aligned_episodes
 
 def test_relative_mapping_and_reanchor():
     hand=transform([1,2,3,.1,.2,.3]);robot=transform([.2,.1,.3,0,.2,0]);axes=np.eye(4)
@@ -47,7 +47,7 @@ def test_replay_rejects_ambiguous_metadata(tmp_path):
 
 
 def test_invalid_control_config_rejected():
-    from pika_piper.core import validate_control_config
+    from utils.core import validate_control_config
     import yaml
     config=yaml.safe_load((Path(__file__).parents[1]/'config/pipeline.yaml').read_text())
     validate_control_config(config)

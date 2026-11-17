@@ -6,7 +6,7 @@ try:
     import pinocchio
 except ImportError:
     pytest.skip('Pinocchio requires the separate control environment', allow_module_level=True)
-from pika_piper.kinematics import Kinematics
+from utils.kinematics import Kinematics
 
 
 def test_regression_report_cannot_allow_send_from_invalid_feedback(monkeypatch):
@@ -109,7 +109,7 @@ def test_stationary_pose_does_not_drift_toward_zero(k,q):
 @pytest.mark.parametrize('axis',range(6))
 @pytest.mark.parametrize('sign',[-1,1])
 def test_small_translation_and_rotation_at_observed_pose(k,axis,sign):
-    from pika_piper.core import transform
+    from utils.core import transform
     q=np.deg2rad([-.596,30.118,-23.212,-3.097,34.591,3.656])
     delta=np.zeros(6);delta[axis]=sign*(.001 if axis<3 else np.deg2rad(1))
     target=k.fk(q)@transform(delta)
