@@ -1,0 +1,20 @@
+# Paths are relative to this YAML, not the shell/IDE working directory.
+# latest selects the most recently saved non-empty Pika LeRobot dataset.
+dataset: /home/zzq/piper_ws-ros1/data/dataset_20261117_125419_27453b8b
+search_dir: ../../../data
+repo_id: /home/zzq/piper_ws-ros1/data/dataset_20261117_125419_27453b8b                    # inferred from pika_pipeline.json
+episodes: 2                    # all, 0, or [0, 1, 2]
+segment_id: null                 # optional segment_id within each episode
+start_frame: 0                  # original episode frame index, inclusive
+end_frame: null                 # exclusive; null means end of episode
+speed: 0.4                    # requested scale
+output_dir: null                # default: DATASET/replay_preview
+save_video: true
+save_plots: true
+display: false                 # OpenCV player: SPACE pause, q/ESC cancel
+camera_names: null              # null = all cameras in metadata order
+video_max_width: 1280
+
+execute: true
+pipeline_config: pipeline.yaml
+control_python: /home/zzq/.conda/envs/pika-bringup/bin/python
